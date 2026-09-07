@@ -18,8 +18,11 @@ import csv
 import io
 import json
 import os
+import smtplib
 import sqlite3
 import time
+from datetime import datetime, timezone
+from email.mime.text import MIMEText
 from pathlib import Path
 
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
@@ -58,6 +61,14 @@ def load_config():
                 "heavy": float(os.environ.get("REPAIR_RATE_HEAVY", 35)),
             },
             "request_delay_seconds": float(os.environ.get("REQUEST_DELAY_SECONDS", 1.5)),
+            "rentcast_monthly_limit": int(os.environ.get("RENTCAST_MONTHLY_LIMIT", 50)),
+            "alerts_enabled": os.environ.get("ALERTS_ENABLED", "false").lower() == "true",
+            "smtp_host": os.environ.get("SMTP_HOST", ""),
+            "smtp_port": int(os.environ.get("SMTP_PORT", 587)),
+            "smtp_user": os.environ.get("SMTP_USER", ""),
+            "smtp_password": os.environ.get("SMTP_PASSWORD", ""),
+            "alert_from_email": os.environ.get("ALERT_FROM_EMAIL", ""),
+            "alert_to_email": os.environ.get("ALERT_TO_EMAIL", ""),
         }
 
     if not CONFIG_PATH.exists():
@@ -95,10 +106,12 @@ def init_db():
             condition TEXT,
             arv REAL,
             sqft REAL,
+            sqft_source TEXT,
             repairs REAL,
             mao REAL,
             potential_profit REAL,
             is_deal INTEGER,
+            status TEXT DEFAULT 'new',
             motivation TEXT,
             occupancy TEXT,
             out_of_state_owner INTEGER,
@@ -109,19 +122,60 @@ def init_db():
             checked_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS api_usage (
+            month TEXT PRIMARY KEY,
+            count INTEGER NOT NULL DEFAULT 0
+        )
+    """)
     # Migration for databases created before quality signals were added.
     existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(leads)")}
     new_cols = {
         "motivation": "TEXT", "occupancy": "TEXT", "out_of_state_owner": "INTEGER",
         "mortgage_status": "TEXT", "known_issues": "TEXT",
         "quality_score": "INTEGER", "quality_max": "INTEGER",
-        "potential_profit": "REAL",
+        "potential_profit": "REAL", "sqft_source": "TEXT",
+        "status": "TEXT DEFAULT 'new'",
     }
     for col, col_type in new_cols.items():
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {col_type}")
+    conn.execute("UPDATE leads SET status = 'new' WHERE status IS NULL")
     conn.commit()
     conn.close()
+
+
+VALID_STATUSES = ["new", "contacted", "offer_made", "under_contract", "closed", "dead"]
+STATUS_LABELS = {
+    "new": "New",
+    "contacted": "Contacted seller",
+    "offer_made": "Offer made",
+    "under_contract": "Under contract",
+    "closed": "Closed",
+    "dead": "Dead",
+}
+
+
+def current_month_key():
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def increment_api_usage():
+    conn = get_db()
+    month = current_month_key()
+    conn.execute("""
+        INSERT INTO api_usage (month, count) VALUES (?, 1)
+        ON CONFLICT(month) DO UPDATE SET count = count + 1
+    """, (month,))
+    conn.commit()
+    conn.close()
+
+
+def get_api_usage_count():
+    conn = get_db()
+    row = conn.execute("SELECT count FROM api_usage WHERE month = ?", (current_month_key(),)).fetchone()
+    conn.close()
+    return row["count"] if row else 0
 
 
 DISTRESSED_MOTIVATIONS = {"probate", "tax_delinquent", "divorce", "inherited", "tired_landlord", "foreclosure"}
@@ -202,13 +256,26 @@ def get_value_estimate(address, api_key):
     headers = {"X-Api-Key": api_key}
     params = {"address": address, "compCount": 15}
     resp = requests.get(RENTCAST_VALUE_URL, headers=headers, params=params, timeout=20)
+    increment_api_usage()  # count the attempt regardless of outcome — RentCast bills the call either way
+
     if resp.status_code != 200:
-        return None, None, resp.text[:200]
+        return None, None, resp.text[:200], []
     data = resp.json()
     arv = data.get("price")
     subject = data.get("subjectProperty", {}) or {}
     sqft = subject.get("squareFootage")
-    return arv, sqft, None
+
+    comps = []
+    for c in (data.get("comparables") or [])[:5]:
+        comps.append({
+            "address": c.get("formattedAddress") or c.get("addressLine1") or "Unknown address",
+            "price": c.get("price"),
+            "sqft": c.get("squareFootage"),
+            "distance": c.get("distance"),
+            "correlation": c.get("correlation"),
+        })
+
+    return arv, sqft, None, comps
 
 
 def estimate_repairs(sqft, condition, repair_rates):
@@ -239,14 +306,20 @@ def calculate_profit(arv, repairs, mao_percent, asking_price):
 def analyze_address(address, asking_price, condition, county, cfg,
                      motivation="unknown", occupancy="unknown",
                      out_of_state_owner=False, mortgage_status="unknown",
-                     known_issues=None):
+                     known_issues=None, manual_sqft=None):
     """Returns a dict with all the numbers, ready to save + display."""
     api_key = cfg["rentcast_api_key"]
     mao_percent = cfg.get("mao_percent", 0.70)
     wholesale_fee = cfg.get("wholesale_fee", 10000)
     repair_rates = cfg.get("repair_rates_per_sqft", {"light": 10, "medium": 20, "heavy": 35})
 
-    arv, sqft, error = get_value_estimate(address, api_key)
+    arv, sqft, error, comps = get_value_estimate(address, api_key)
+
+    sqft_source = "auto" if sqft else None
+    if manual_sqft:
+        sqft = manual_sqft
+        sqft_source = "manual"
+
     repairs = estimate_repairs(sqft, condition, repair_rates) if arv else None
     mao = calculate_mao(arv, repairs, mao_percent, wholesale_fee) if arv else None
     potential_profit = calculate_profit(arv, repairs, mao_percent, asking_price) if arv else None
@@ -264,11 +337,13 @@ def analyze_address(address, asking_price, condition, county, cfg,
         "condition": condition,
         "arv": arv,
         "sqft": sqft,
+        "sqft_source": sqft_source,
         "repairs": repairs,
         "mao": mao,
         "potential_profit": potential_profit,
         "is_deal": is_deal,
         "error": error,
+        "comps": comps,
         "motivation": motivation,
         "occupancy": occupancy,
         "out_of_state_owner": out_of_state_owner,
@@ -281,13 +356,13 @@ def analyze_address(address, asking_price, condition, county, cfg,
 def save_lead(result):
     conn = get_db()
     conn.execute("""
-        INSERT INTO leads (address, county, asking_price, condition, arv, sqft, repairs, mao, potential_profit, is_deal,
+        INSERT INTO leads (address, county, asking_price, condition, arv, sqft, sqft_source, repairs, mao, potential_profit, is_deal,
                             motivation, occupancy, out_of_state_owner, mortgage_status, known_issues,
                             quality_score, quality_max)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         result["address"], result.get("county"), result.get("asking_price"),
-        result.get("condition"), result.get("arv"), result.get("sqft"),
+        result.get("condition"), result.get("arv"), result.get("sqft"), result.get("sqft_source"),
         result.get("repairs"), result.get("mao"), result.get("potential_profit"),
         int(result.get("is_deal", False)),
         result.get("motivation"), result.get("occupancy"),
@@ -295,6 +370,42 @@ def save_lead(result):
         ",".join(result.get("known_issues") or []),
         result.get("quality", {}).get("score"), result.get("quality", {}).get("max_score"),
     ))
+    conn.commit()
+    conn.close()
+
+
+def send_alert(subject, body, cfg):
+    """
+    Sends an email — which can just as easily be a carrier's email-to-SMS
+    gateway address (e.g. 5551234567@vtext.com) set as ALERT_TO_EMAIL, so
+    this doubles as a free 'text alert' with no SMS provider needed.
+    Silently no-ops if alerts aren't configured; never raises, so a bad
+    alert config can't break the actual deal-checking flow.
+    """
+    if not cfg.get("alerts_enabled"):
+        return
+    required = ["smtp_host", "smtp_user", "smtp_password", "alert_from_email", "alert_to_email"]
+    if not all(cfg.get(k) for k in required):
+        print("Alerts enabled but missing SMTP/alert settings — skipping send.")
+        return
+    try:
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"] = cfg["alert_from_email"]
+        msg["To"] = cfg["alert_to_email"]
+        with smtplib.SMTP(cfg["smtp_host"], cfg.get("smtp_port", 587), timeout=10) as server:
+            server.starttls()
+            server.login(cfg["smtp_user"], cfg["smtp_password"])
+            server.send_message(msg)
+    except Exception as e:
+        print(f"Alert send failed: {e}")
+
+
+def update_lead_status(lead_id, status):
+    if status not in VALID_STATUSES:
+        return
+    conn = get_db()
+    conn.execute("UPDATE leads SET status = ? WHERE id = ?", (status, lead_id))
     conn.commit()
     conn.close()
 
@@ -307,7 +418,15 @@ def home():
     deal_count = conn.execute("SELECT COUNT(*) c FROM leads WHERE is_deal = 1").fetchone()["c"]
     checked_count = conn.execute("SELECT COUNT(*) c FROM leads").fetchone()["c"]
     conn.close()
-    return render_template("index.html", deal_count=deal_count, checked_count=checked_count)
+    api_used = get_api_usage_count()
+    try:
+        api_limit = load_config().get("rentcast_monthly_limit", 50)
+    except FileNotFoundError:
+        api_limit = 50
+    return render_template(
+        "index.html", deal_count=deal_count, checked_count=checked_count,
+        api_used=api_used, api_limit=api_limit,
+    )
 
 
 @app.route("/check", methods=["GET", "POST"])
@@ -327,14 +446,25 @@ def check():
     out_of_state_owner = request.form.get("out_of_state_owner") == "yes"
     mortgage_status = request.form.get("mortgage_status", "unknown")
     known_issues = request.form.getlist("known_issues")
+    manual_sqft = request.form.get("square_footage")
+    manual_sqft = float(manual_sqft) if manual_sqft else None
 
     result = analyze_address(
         address, asking_price, condition, county, cfg,
         motivation=motivation, occupancy=occupancy,
         out_of_state_owner=out_of_state_owner, mortgage_status=mortgage_status,
-        known_issues=known_issues,
+        known_issues=known_issues, manual_sqft=manual_sqft,
     )
     save_lead(result)
+
+    if result.get("is_deal"):
+        send_alert(
+            f"Deal found: {result['address']}",
+            f"{result['address']}\n"
+            f"Asking: ${result['asking_price']:,.0f}  MAO: ${result['mao']:,.0f}  "
+            f"Profit: ${result['potential_profit']:,.0f}",
+            cfg,
+        )
 
     counties = load_counties()
     return render_template("check.html", result=result, counties=counties)
@@ -372,16 +502,31 @@ def import_leads():
         mortgage_status = (row.get("mortgage_status") or "unknown").strip().lower()
         known_issues_raw = (row.get("known_issues") or "").strip()
         known_issues = [i.strip().lower() for i in known_issues_raw.split(";") if i.strip()]
+        manual_sqft = row.get("square_footage")
+        manual_sqft = float(manual_sqft) if manual_sqft else None
 
         result = analyze_address(
             address, asking_price, condition, county, cfg,
             motivation=motivation, occupancy=occupancy,
             out_of_state_owner=out_of_state_owner, mortgage_status=mortgage_status,
-            known_issues=known_issues,
+            known_issues=known_issues, manual_sqft=manual_sqft,
         )
         save_lead(result)
         results.append(result)
         time.sleep(request_delay)
+
+    new_deals = [r for r in results if r.get("is_deal")]
+    if new_deals:
+        lines = [
+            f"{r['address']} — Asking ${r['asking_price']:,.0f}, Profit ${r['potential_profit']:,.0f}"
+            for r in new_deals[:5]
+        ]
+        more = f"\n...and {len(new_deals) - 5} more" if len(new_deals) > 5 else ""
+        send_alert(
+            f"{len(new_deals)} deal(s) found in your import",
+            "\n".join(lines) + more,
+            cfg,
+        )
 
     return render_template("import.html", results=results, counties=counties)
 
@@ -393,7 +538,7 @@ def deals():
         SELECT * FROM leads WHERE is_deal = 1 ORDER BY potential_profit DESC
     """).fetchall()
     conn.close()
-    return render_template("deals.html", deals=rows)
+    return render_template("deals.html", deals=rows, statuses=VALID_STATUSES, status_labels=STATUS_LABELS)
 
 
 @app.route("/leads")
@@ -401,7 +546,14 @@ def all_leads():
     conn = get_db()
     rows = conn.execute("SELECT * FROM leads ORDER BY checked_at DESC LIMIT 200").fetchall()
     conn.close()
-    return render_template("leads.html", leads=rows)
+    return render_template("leads.html", leads=rows, statuses=VALID_STATUSES, status_labels=STATUS_LABELS)
+
+
+@app.route("/leads/<int:lead_id>/status", methods=["POST"])
+def update_status(lead_id):
+    status = request.form.get("status", "")
+    update_lead_status(lead_id, status)
+    return redirect(request.form.get("redirect_to") or url_for("deals"))
 
 
 @app.route("/sources")
