@@ -12,7 +12,7 @@
 {% else %}
 <div class="card">
     <table>
-        <tr><th>Address</th><th>County</th><th>Asking</th><th>MAO</th><th>Spread</th></tr>
+        <tr><th>Address</th><th>County</th><th>Asking</th><th>MAO</th><th>Spread</th><th>Quality</th></tr>
         {% for d in deals %}
         <tr>
             <td>{{ d.address }}</td>
@@ -20,6 +20,7 @@
             <td>${{ '{:,.0f}'.format(d.asking_price) if d.asking_price else '—' }}</td>
             <td>${{ '{:,.0f}'.format(d.mao) if d.mao else '—' }}</td>
             <td>${{ '{:,.0f}'.format(d.mao - d.asking_price) if d.mao and d.asking_price else '—' }}</td>
+            <td>{% if d.quality_score is not none %}{{ d.quality_score }}/{{ d.quality_max }}{% else %}—{% endif %}</td>
         </tr>
         {% endfor %}
     </table>
