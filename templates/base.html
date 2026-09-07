@@ -1,191 +1,134 @@
-{% extends "base.html" %}
-{% block title %}Check an Address{% endblock %}
-{% block content %}
-
-{% if result %}
-    {% if result.error %}
-        <div class="card">
-            <p><b>Couldn't look that address up.</b></p>
-            <p style="color:#8b1e1e;">{{ result.error }}</p>
-            <p class="hint">Double check the spelling, or make sure it's a full address (street, city, state, zip).</p>
-        </div>
-    {% else %}
-        <div class="result-banner {{ 'result-yes' if result.is_deal else 'result-no' }}">
-            {% if result.is_deal %}
-                ✅ Looks like a good deal!
-            {% else %}
-                ❌ Not a deal at this price
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Deal Finder">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#1a4d2e">
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+    <title>{% block title %}Deal Finder{% endblock %}</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f7fa;
+            color: #222;
+            margin: 0;
+            padding: 0;
+        }
+        header {
+            background: #1a4d2e;
+            color: white;
+            padding: 18px 20px;
+        }
+        header h1 {
+            margin: 0;
+            font-size: 22px;
+        }
+        header a { color: white; text-decoration: none; }
+        nav {
+            background: #245c38;
+            display: flex;
+            flex-wrap: wrap;
+        }
+        nav a {
+            color: white;
+            padding: 12px 16px;
+            text-decoration: none;
+            font-size: 15px;
+        }
+        nav a:hover { background: #1a4d2e; }
+        main {
+            max-width: 640px;
+            margin: 0 auto;
+            padding: 20px 16px 60px;
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+        .big-button {
+            display: block;
+            width: 100%;
+            padding: 18px;
+            font-size: 18px;
+            font-weight: 600;
+            border-radius: 12px;
+            border: none;
+            background: #2e7d4f;
+            color: white;
+            text-align: center;
+            text-decoration: none;
+            margin-bottom: 12px;
+            cursor: pointer;
+        }
+        .big-button:hover { background: #1a4d2e; }
+        .big-button.secondary {
+            background: white;
+            color: #2e7d4f;
+            border: 2px solid #2e7d4f;
+        }
+        label { display: block; font-weight: 600; margin: 14px 0 6px; font-size: 15px; }
+        label.checkbox-label { display: inline-block; font-weight: normal; margin: 6px 12px 0 0; }
+        input[type=text], input[type=number], select, input[type=file] {
+            width: 100%;
+            padding: 12px;
+            font-size: 16px;
+            border-radius: 8px;
+            border: 1px solid #ccc;
+        }
+        .hint { color: #666; font-size: 13px; margin-top: 4px; }
+        .result-banner {
+            padding: 24px;
+            border-radius: 12px;
+            text-align: center;
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 16px;
+        }
+        .result-yes { background: #d7f0dd; color: #1a4d2e; }
+        .result-no { background: #fbe1e1; color: #8b1e1e; }
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #eee;
+            font-size: 15px;
+        }
+        .stat-row span:first-child { color: #555; }
+        .stat-row span:last-child { font-weight: 600; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; }
+        .tag-yes { background: #2e7d4f; color: white; padding: 3px 8px; border-radius: 6px; font-size: 12px; }
+        .tag-no { background: #ccc; color: #444; padding: 3px 8px; border-radius: 6px; font-size: 12px; }
+        .flash { background: #fff3cd; padding: 12px; border-radius: 8px; margin-bottom: 12px; }
+        a.plain { color: #2e7d4f; }
+        .empty-state { text-align: center; color: #888; padding: 40px 0; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1><a href="{{ url_for('home') }}">🏠 Deal Finder</a></h1>
+    </header>
+    <nav>
+        <a href="{{ url_for('home') }}">Home</a>
+        <a href="{{ url_for('check') }}">Check an Address</a>
+        <a href="{{ url_for('import_leads') }}">Import a List</a>
+        <a href="{{ url_for('deals') }}">My Deals</a>
+        <a href="{{ url_for('sources') }}">Where to Get Leads</a>
+    </nav>
+    <main>
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}
             {% endif %}
-        </div>
-        <div class="card">
-            <p style="font-size:15px;">
-                This house could sell for about <b>${{ '{:,.0f}'.format(result.arv) if result.arv else '?' }}</b>
-                after it's fixed up. Fixing it up would cost around
-                <b>${{ '{:,.0f}'.format(result.repairs) if result.repairs else '?' }}</b>.
-                That means the most you should offer is about
-                <b>${{ '{:,.0f}'.format(result.mao) if result.mao else '?' }}</b>.
-            </p>
-            <div class="stat-row"><span>Address</span><span>{{ result.address }}</span></div>
-            <div class="stat-row"><span>Asking price</span><span>${{ '{:,.0f}'.format(result.asking_price) if result.asking_price else '—' }}</span></div>
-            <div class="stat-row"><span>After-Repair Value (ARV)</span><span>${{ '{:,.0f}'.format(result.arv) if result.arv else '—' }}</span></div>
-            <div class="stat-row"><span>Estimated repairs</span><span>${{ '{:,.0f}'.format(result.repairs) if result.repairs else '—' }}</span></div>
-            <div class="stat-row"><span>Max offer (MAO)</span><span>${{ '{:,.0f}'.format(result.mao) if result.mao else '—' }}</span></div>
-        </div>
-
-        {% if result.potential_profit is not none %}
-        <div class="card" style="background:{{ '#d7f0dd' if result.potential_profit >= 0 else '#fbe1e1' }};">
-            <h3 style="margin-top:0;">Your estimated profit</h3>
-            <p style="font-size:32px; font-weight:700; margin:4px 0; color:{{ '#1a4d2e' if result.potential_profit >= 0 else '#8b1e1e' }};">
-                ${{ '{:,.0f}'.format(result.potential_profit) }}
-            </p>
-            <p class="hint">
-                {% if result.potential_profit >= 0 %}
-                    If you get this property at the asking price and assign the contract to an end buyer at the top price they'd pay.
-                {% else %}
-                    At this asking price, there isn't room left for a profit once repairs are covered.
-                {% endif %}
-            </p>
-        </div>
-        {% endif %}
-
-        <div class="card">
-            <h3>Lead quality signals — {{ result.quality.score }}/{{ result.quality.max_score }}</h3>
-            <p class="hint">These don't affect the math above — they're about how easy this seller will be to work with.</p>
-            {% for s in result.quality.signals %}
-            <div class="stat-row">
-                <span>{{ '✅' if s.positive else '⚪' }} {{ s.label }}</span>
-                <span>{{ s.detail }}</span>
-            </div>
-            {% endfor %}
-            {% if result.quality.cautions %}
-            <p style="margin-top:14px; color:#8b1e1e; font-size:14px;">
-                ⚠️ Known issues: {{ result.quality.cautions|join(', ') }} —
-                these can run past a generic repair estimate, worth an in-person look before you commit.
-            </p>
-            {% endif %}
-        </div>
-    {% endif %}
-    <a class="big-button secondary" href="{{ url_for('check') }}">Check Another Address</a>
-{% endif %}
-
-<div class="card">
-    <h2>Check an address</h2>
-    <form method="POST">
-        <label>Property address</label>
-        <div style="position:relative;">
-            <input type="text" name="address" id="address-input" placeholder="123 Main St, Atlanta, GA, 30313" required autocomplete="off">
-            <div id="address-suggestions" style="display:none; position:absolute; top:100%; left:0; right:0; background:white; border:1px solid #ccc; border-top:none; border-radius:0 0 8px 8px; z-index:10; max-height:220px; overflow-y:auto;"></div>
-        </div>
-        <div class="hint">Full address works best: street, city, state, zip.</div>
-
-        <label>Asking price (what the seller wants)</label>
-        <input type="number" name="asking_price" placeholder="150000">
-
-        <label>How rough is the house?</label>
-        <select name="condition">
-            <option value="light">Light — just needs paint/carpet</option>
-            <option value="medium" selected>Medium — kitchen/bath, some systems</option>
-            <option value="heavy">Heavy — full gut rehab</option>
-        </select>
-
-        <label>County (optional)</label>
-        <select name="county">
-            <option value="">— not sure —</option>
-            {% for c in counties %}
-                <option value="{{ c.name }}">{{ c.name }}</option>
-            {% endfor %}
-        </select>
-
-        <h3 style="margin-top:24px;">About the seller (optional, but helpful)</h3>
-
-        <label>Why is the seller selling?</label>
-        <select name="motivation">
-            <option value="unknown">Not sure</option>
-            <option value="probate">Probate (owner passed away)</option>
-            <option value="tax_delinquent">Behind on property taxes</option>
-            <option value="divorce">Divorce</option>
-            <option value="inherited">Inherited, nobody wants it</option>
-            <option value="tired_landlord">Tired landlord</option>
-            <option value="foreclosure">Pre-foreclosure</option>
-            <option value="relocating">Relocating</option>
-        </select>
-
-        <label>Is the house lived in?</label>
-        <select name="occupancy">
-            <option value="unknown">Not sure</option>
-            <option value="vacant">Vacant</option>
-            <option value="owner">Owner lives there</option>
-            <option value="tenant">Tenant lives there</option>
-        </select>
-
-        <label>Does the owner live out of state/area?</label>
-        <select name="out_of_state_owner">
-            <option value="no">No / not sure</option>
-            <option value="yes">Yes</option>
-        </select>
-
-        <label>Mortgage status</label>
-        <select name="mortgage_status">
-            <option value="unknown">Not sure</option>
-            <option value="free_and_clear">Free and clear (no mortgage)</option>
-            <option value="has_mortgage">Has a mortgage</option>
-        </select>
-
-        <label>Any known problems? (check all that apply)</label>
-        <div style="font-size:15px;">
-            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="foundation"> Foundation</label>
-            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="roof"> Roof</label>
-            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="structural"> Structural</label>
-            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="mold"> Mold</label>
-        </div>
-
-        <button class="big-button" type="submit" style="margin-top:16px; border:none;">Check It</button>
-    </form>
-</div>
-
-<script>
-(function () {
-    const input = document.getElementById('address-input');
-    const box = document.getElementById('address-suggestions');
-    let debounceTimer = null;
-    let currentSuggestions = [];
-
-    function hideSuggestions() {
-        box.style.display = 'none';
-        box.innerHTML = '';
-    }
-
-    function showSuggestions(list) {
-        currentSuggestions = list;
-        if (!list.length) { hideSuggestions(); return; }
-        box.innerHTML = list.map((addr, i) =>
-            `<div class="suggestion-item" data-i="${i}" style="padding:10px 12px; cursor:pointer; border-bottom:1px solid #eee; font-size:14px;">${addr}</div>`
-        ).join('');
-        box.style.display = 'block';
-        box.querySelectorAll('.suggestion-item').forEach(el => {
-            el.addEventListener('click', () => {
-                input.value = currentSuggestions[el.dataset.i];
-                hideSuggestions();
-            });
-            el.addEventListener('touchstart', () => { el.style.background = '#f0f0f0'; });
-        });
-    }
-
-    input.addEventListener('input', () => {
-        const query = input.value.trim();
-        clearTimeout(debounceTimer);
-        if (query.length < 5) { hideSuggestions(); return; }
-        debounceTimer = setTimeout(() => {
-            fetch('/api/address-suggest?q=' + encodeURIComponent(query))
-                .then(r => r.ok ? r.json() : [])
-                .then(showSuggestions)
-                .catch(() => hideSuggestions());
-        }, 400);
-    });
-
-    document.addEventListener('click', (e) => {
-        if (e.target !== input && !box.contains(e.target)) hideSuggestions();
-    });
-})();
-</script>
-{% endblock %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>
