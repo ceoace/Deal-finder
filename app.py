@@ -97,6 +97,7 @@ def init_db():
             sqft REAL,
             repairs REAL,
             mao REAL,
+            potential_profit REAL,
             is_deal INTEGER,
             motivation TEXT,
             occupancy TEXT,
@@ -114,6 +115,7 @@ def init_db():
         "motivation": "TEXT", "occupancy": "TEXT", "out_of_state_owner": "INTEGER",
         "mortgage_status": "TEXT", "known_issues": "TEXT",
         "quality_score": "INTEGER", "quality_max": "INTEGER",
+        "potential_profit": "REAL",
     }
     for col, col_type in new_cols.items():
         if col not in existing_cols:
@@ -222,6 +224,18 @@ def calculate_mao(arv, repairs, mao_percent, wholesale_fee):
     return round((arv * mao_percent) - repairs - wholesale_fee)
 
 
+def calculate_profit(arv, repairs, mao_percent, asking_price):
+    """
+    What you'd actually net if you got the property under contract at
+    asking_price and assigned it to an end buyer at the ceiling price
+    (ARV x mao_percent - repairs) they'd be willing to pay. This already
+    includes your wholesale fee — it's not on top of it.
+    """
+    if arv is None or repairs is None or asking_price is None:
+        return None
+    return round((arv * mao_percent) - repairs - asking_price)
+
+
 def analyze_address(address, asking_price, condition, county, cfg,
                      motivation="unknown", occupancy="unknown",
                      out_of_state_owner=False, mortgage_status="unknown",
@@ -235,6 +249,7 @@ def analyze_address(address, asking_price, condition, county, cfg,
     arv, sqft, error = get_value_estimate(address, api_key)
     repairs = estimate_repairs(sqft, condition, repair_rates) if arv else None
     mao = calculate_mao(arv, repairs, mao_percent, wholesale_fee) if arv else None
+    potential_profit = calculate_profit(arv, repairs, mao_percent, asking_price) if arv else None
 
     is_deal = False
     if mao is not None and asking_price is not None:
@@ -251,6 +266,7 @@ def analyze_address(address, asking_price, condition, county, cfg,
         "sqft": sqft,
         "repairs": repairs,
         "mao": mao,
+        "potential_profit": potential_profit,
         "is_deal": is_deal,
         "error": error,
         "motivation": motivation,
@@ -265,14 +281,15 @@ def analyze_address(address, asking_price, condition, county, cfg,
 def save_lead(result):
     conn = get_db()
     conn.execute("""
-        INSERT INTO leads (address, county, asking_price, condition, arv, sqft, repairs, mao, is_deal,
+        INSERT INTO leads (address, county, asking_price, condition, arv, sqft, repairs, mao, potential_profit, is_deal,
                             motivation, occupancy, out_of_state_owner, mortgage_status, known_issues,
                             quality_score, quality_max)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         result["address"], result.get("county"), result.get("asking_price"),
         result.get("condition"), result.get("arv"), result.get("sqft"),
-        result.get("repairs"), result.get("mao"), int(result.get("is_deal", False)),
+        result.get("repairs"), result.get("mao"), result.get("potential_profit"),
+        int(result.get("is_deal", False)),
         result.get("motivation"), result.get("occupancy"),
         int(bool(result.get("out_of_state_owner"))), result.get("mortgage_status"),
         ",".join(result.get("known_issues") or []),
@@ -373,7 +390,7 @@ def import_leads():
 def deals():
     conn = get_db()
     rows = conn.execute("""
-        SELECT * FROM leads WHERE is_deal = 1 ORDER BY (mao - asking_price) DESC
+        SELECT * FROM leads WHERE is_deal = 1 ORDER BY potential_profit DESC
     """).fetchall()
     conn.close()
     return render_template("deals.html", deals=rows)
