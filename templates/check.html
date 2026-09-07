@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Check an Address{% endblock %}
+{% block content %}
+
+{% if result %}
+    {% if result.error %}
+        <div class="card">
+            <p><b>Couldn't look that address up.</b></p>
+            <p style="color:#8b1e1e;">{{ result.error }}</p>
+            <p class="hint">Double check the spelling, or make sure it's a full address (street, city, state, zip).</p>
+        </div>
+    {% else %}
+        <div class="result-banner {{ 'result-yes' if result.is_deal else 'result-no' }}">
+            {% if result.is_deal %}
+                ✅ Looks like a good deal!
+            {% else %}
+                ❌ Not a deal at this price
+            {% endif %}
+        </div>
+        <div class="card">
+            <p style="font-size:15px;">
+                This house could sell for about <b>${{ '{:,.0f}'.format(result.arv) if result.arv else '?' }}</b>
+                after it's fixed up. Fixing it up would cost around
+                <b>${{ '{:,.0f}'.format(result.repairs) if result.repairs else '?' }}</b>.
+                That means the most you should offer is about
+                <b>${{ '{:,.0f}'.format(result.mao) if result.mao else '?' }}</b>.
+            </p>
+            <div class="stat-row"><span>Address</span><span>{{ result.address }}</span></div>
+            <div class="stat-row"><span>Asking price</span><span>${{ '{:,.0f}'.format(result.asking_price) if result.asking_price else '—' }}</span></div>
+            <div class="stat-row"><span>After-Repair Value (ARV)</span><span>${{ '{:,.0f}'.format(result.arv) if result.arv else '—' }}</span></div>
+            <div class="stat-row"><span>Estimated repairs</span><span>${{ '{:,.0f}'.format(result.repairs) if result.repairs else '—' }}</span></div>
+            <div class="stat-row"><span>Max offer (MAO)</span><span>${{ '{:,.0f}'.format(result.mao) if result.mao else '—' }}</span></div>
+        </div>
+    {% endif %}
+    <a class="big-button secondary" href="{{ url_for('check') }}">Check Another Address</a>
+{% endif %}
+
+<div class="card">
+    <h2>Check an address</h2>
+    <form method="POST">
+        <label>Property address</label>
+        <input type="text" name="address" placeholder="123 Main St, Atlanta, GA, 30313" required>
+        <div class="hint">Full address works best: street, city, state, zip.</div>
+
+        <label>Asking price (what the seller wants)</label>
+        <input type="number" name="asking_price" placeholder="150000">
+
+        <label>How rough is the house?</label>
+        <select name="condition">
+            <option value="light">Light — just needs paint/carpet</option>
+            <option value="medium" selected>Medium — kitchen/bath, some systems</option>
+            <option value="heavy">Heavy — full gut rehab</option>
+        </select>
+
+        <label>County (optional)</label>
+        <select name="county">
+            <option value="">— not sure —</option>
+            {% for c in counties %}
+                <option value="{{ c.name }}">{{ c.name }}</option>
+            {% endfor %}
+        </select>
+
+        <button class="big-button" type="submit" style="margin-top:16px; border:none;">Check It</button>
+    </form>
+</div>
+{% endblock %}
