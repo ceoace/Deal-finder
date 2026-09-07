@@ -12,15 +12,25 @@
 {% else %}
 <div class="card">
     <table>
-        <tr><th>Address</th><th>County</th><th>Asking</th><th>MAO</th><th>Spread</th><th>Quality</th></tr>
+        <tr><th>Address</th><th>County</th><th>Asking</th><th>MAO</th><th>Profit</th><th>Quality</th><th>Status</th></tr>
         {% for d in deals %}
         <tr>
             <td>{{ d.address }}</td>
             <td>{{ d.county or '—' }}</td>
             <td>${{ '{:,.0f}'.format(d.asking_price) if d.asking_price else '—' }}</td>
             <td>${{ '{:,.0f}'.format(d.mao) if d.mao else '—' }}</td>
-            <td>${{ '{:,.0f}'.format(d.mao - d.asking_price) if d.mao and d.asking_price else '—' }}</td>
+            <td>{% if d.potential_profit is not none %}${{ '{:,.0f}'.format(d.potential_profit) }}{% else %}—{% endif %}</td>
             <td>{% if d.quality_score is not none %}{{ d.quality_score }}/{{ d.quality_max }}{% else %}—{% endif %}</td>
+            <td>
+                <form method="POST" action="{{ url_for('update_status', lead_id=d.id) }}">
+                    <input type="hidden" name="redirect_to" value="{{ request.path }}">
+                    <select name="status" onchange="this.form.submit()" style="padding:4px; font-size:13px;">
+                        {% for s in statuses %}
+                        <option value="{{ s }}" {% if d.status == s %}selected{% endif %}>{{ status_labels[s] }}</option>
+                        {% endfor %}
+                    </select>
+                </form>
+            </td>
         </tr>
         {% endfor %}
     </table>
