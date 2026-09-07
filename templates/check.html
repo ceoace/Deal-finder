@@ -31,6 +31,23 @@
             <div class="stat-row"><span>Estimated repairs</span><span>${{ '{:,.0f}'.format(result.repairs) if result.repairs else '—' }}</span></div>
             <div class="stat-row"><span>Max offer (MAO)</span><span>${{ '{:,.0f}'.format(result.mao) if result.mao else '—' }}</span></div>
         </div>
+
+        <div class="card">
+            <h3>Lead quality signals — {{ result.quality.score }}/{{ result.quality.max_score }}</h3>
+            <p class="hint">These don't affect the math above — they're about how easy this seller will be to work with.</p>
+            {% for s in result.quality.signals %}
+            <div class="stat-row">
+                <span>{{ '✅' if s.positive else '⚪' }} {{ s.label }}</span>
+                <span>{{ s.detail }}</span>
+            </div>
+            {% endfor %}
+            {% if result.quality.cautions %}
+            <p style="margin-top:14px; color:#8b1e1e; font-size:14px;">
+                ⚠️ Known issues: {{ result.quality.cautions|join(', ') }} —
+                these can run past a generic repair estimate, worth an in-person look before you commit.
+            </p>
+            {% endif %}
+        </div>
     {% endif %}
     <a class="big-button secondary" href="{{ url_for('check') }}">Check Another Address</a>
 {% endif %}
@@ -59,6 +76,49 @@
                 <option value="{{ c.name }}">{{ c.name }}</option>
             {% endfor %}
         </select>
+
+        <h3 style="margin-top:24px;">About the seller (optional, but helpful)</h3>
+
+        <label>Why is the seller selling?</label>
+        <select name="motivation">
+            <option value="unknown">Not sure</option>
+            <option value="probate">Probate (owner passed away)</option>
+            <option value="tax_delinquent">Behind on property taxes</option>
+            <option value="divorce">Divorce</option>
+            <option value="inherited">Inherited, nobody wants it</option>
+            <option value="tired_landlord">Tired landlord</option>
+            <option value="foreclosure">Pre-foreclosure</option>
+            <option value="relocating">Relocating</option>
+        </select>
+
+        <label>Is the house lived in?</label>
+        <select name="occupancy">
+            <option value="unknown">Not sure</option>
+            <option value="vacant">Vacant</option>
+            <option value="owner">Owner lives there</option>
+            <option value="tenant">Tenant lives there</option>
+        </select>
+
+        <label>Does the owner live out of state/area?</label>
+        <select name="out_of_state_owner">
+            <option value="no">No / not sure</option>
+            <option value="yes">Yes</option>
+        </select>
+
+        <label>Mortgage status</label>
+        <select name="mortgage_status">
+            <option value="unknown">Not sure</option>
+            <option value="free_and_clear">Free and clear (no mortgage)</option>
+            <option value="has_mortgage">Has a mortgage</option>
+        </select>
+
+        <label>Any known problems? (check all that apply)</label>
+        <div style="font-size:15px;">
+            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="foundation"> Foundation</label>
+            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="roof"> Roof</label>
+            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="structural"> Structural</label>
+            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="mold"> Mold</label>
+        </div>
 
         <button class="big-button" type="submit" style="margin-top:16px; border:none;">Check It</button>
     </form>
