@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Where to Find Leads{% endblock %}
+{% block content %}
+
+<div class="card">
+    <h2>Tax delinquent lists (free, real, downloadable)</h2>
+    <p style="font-size:14px; color:#555;">
+        These counties publish their delinquent property tax lists online for
+        free — usually as a downloadable spreadsheet. Download one, open it,
+        save it as a CSV with an <b>address</b> column, then use
+        <a class="plain" href="{{ url_for('import_leads') }}">Import a List</a>.
+    </p>
+    <table>
+        <tr><th>County</th><th>Link</th></tr>
+        {% for c in counties %}
+        <tr>
+            <td>{{ c.name }}</td>
+            <td>{% if c.url %}<a class="plain" href="{{ c.url }}" target="_blank">Open ↗</a>{% else %}search "{{ c.name }} County GA tax commissioner delinquent tax list"{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+
+<div class="card">
+    <h2>Probate leads (the honest truth)</h2>
+    <p style="font-size:14px; color:#555;">
+        No Georgia county publishes a free, downloadable probate lead list.
+        Probate filings live in each county's Probate Court, and most only
+        offer a case-by-case docket search — no bulk export. Two realistic
+        paths:
+    </p>
+    <ul style="font-size:14px; color:#555;">
+        <li><b>Paid list service</b> (e.g. PropStream, BatchLeads, USLeadList)
+        — these already aggregate probate + tax delinquent + pre-foreclosure
+        leads by radius/zip and export clean CSVs. This is what most active
+        wholesalers actually use, because scraping two dozen county court
+        sites by hand doesn't scale.</li>
+        <li><b>Manual pull</b> — search each county's Probate Court docket
+        site for new filings, one at a time. Free, but slow.</li>
+    </ul>
+    <p style="font-size:14px; color:#555;">
+        Either way, once you have a list with an <b>address</b> column, this
+        app treats it the same as a tax delinquent list — just import it.
+    </p>
+</div>
+
+<div class="card">
+    <h3>About the 65-mile radius from 30313</h3>
+    <p style="font-size:14px; color:#555;">
+        A 65-mile radius from downtown Atlanta covers most of metro Atlanta
+        plus the outer suburbs — roughly the counties listed above. Since
+        county tax offices publish by county (not by mile radius), the
+        practical way to work the radius is: pick the counties inside it,
+        pull each county's list, and let this app do the deal math on
+        whatever comes back.
+    </p>
+</div>
+
+{% endblock %}
+
