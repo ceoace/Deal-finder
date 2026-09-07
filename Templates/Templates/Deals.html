@@ -1,1 +1,29 @@
-templates/deals.html
+{% extends "base.html" %}
+{% block title %}My Deals{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>Good deals found</h2>
+</div>
+
+{% if deals|length == 0 %}
+<div class="card empty-state">
+    <p>No deals yet. Go check some addresses!</p>
+</div>
+{% else %}
+<div class="card">
+    <table>
+        <tr><th>Address</th><th>County</th><th>Asking</th><th>MAO</th><th>Spread</th></tr>
+        {% for d in deals %}
+        <tr>
+            <td>{{ d.address }}</td>
+            <td>{{ d.county or '—' }}</td>
+            <td>${{ '{:,.0f}'.format(d.asking_price) if d.asking_price else '—' }}</td>
+            <td>${{ '{:,.0f}'.format(d.mao) if d.mao else '—' }}</td>
+            <td>${{ '{:,.0f}'.format(d.mao - d.asking_price) if d.mao and d.asking_price else '—' }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+{% endblock %}
+
