@@ -32,6 +32,22 @@
             <div class="stat-row"><span>Max offer (MAO)</span><span>${{ '{:,.0f}'.format(result.mao) if result.mao else '—' }}</span></div>
         </div>
 
+        {% if result.potential_profit is not none %}
+        <div class="card" style="background:{{ '#d7f0dd' if result.potential_profit >= 0 else '#fbe1e1' }};">
+            <h3 style="margin-top:0;">Your estimated profit</h3>
+            <p style="font-size:32px; font-weight:700; margin:4px 0; color:{{ '#1a4d2e' if result.potential_profit >= 0 else '#8b1e1e' }};">
+                ${{ '{:,.0f}'.format(result.potential_profit) }}
+            </p>
+            <p class="hint">
+                {% if result.potential_profit >= 0 %}
+                    If you get this property at the asking price and assign the contract to an end buyer at the top price they'd pay.
+                {% else %}
+                    At this asking price, there isn't room left for a profit once repairs are covered.
+                {% endif %}
+            </p>
+        </div>
+        {% endif %}
+
         <div class="card">
             <h3>Lead quality signals — {{ result.quality.score }}/{{ result.quality.max_score }}</h3>
             <p class="hint">These don't affect the math above — they're about how easy this seller will be to work with.</p>
