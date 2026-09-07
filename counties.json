@@ -1,0 +1,22 @@
+[
+  {"name": "Fulton", "url": "https://www.fultoncountytaxes.org"},
+  {"name": "DeKalb", "url": "https://dekalbtax.org/form-doc/delinquent-property-tax-list"},
+  {"name": "Gwinnett", "url": "https://www.gwinnetttaxcommissioner.com/property-tax/delinquent-tax"},
+  {"name": "Cobb", "url": null},
+  {"name": "Clayton", "url": null},
+  {"name": "Fayette", "url": null},
+  {"name": "Henry", "url": null},
+  {"name": "Rockdale", "url": null},
+  {"name": "Douglas", "url": null},
+  {"name": "Coweta", "url": null},
+  {"name": "Cherokee", "url": null},
+  {"name": "Forsyth", "url": null},
+  {"name": "Paulding", "url": null},
+  {"name": "Bartow", "url": null},
+  {"name": "Newton", "url": null},
+  {"name": "Walton", "url": null},
+  {"name": "Barrow", "url": null},
+  {"name": "Spalding", "url": null},
+  {"name": "Carroll", "url": null},
+  {"name": "Butts", "url": null}
+]
