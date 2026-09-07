@@ -26,4 +26,150 @@
                 <b>${{ '{:,.0f}'.format(result.mao) if result.mao else '?' }}</b>.
             </p>
             <div class="stat-row"><span>Address</span><span>{{ result.address }}</span></div>
-            <div class="stat-row"><span>Asking price</span><span>${{ '{:,.0f}'.format(result.asking_price) if result.asking_price else '—' }}</span>
+            <div class="stat-row"><span>Asking price</span><span>${{ '{:,.0f}'.format(result.asking_price) if result.asking_price else '—' }}</span></div>
+            <div class="stat-row"><span>After-Repair Value (ARV)</span><span>${{ '{:,.0f}'.format(result.arv) if result.arv else '—' }}</span></div>
+            <div class="stat-row"><span>Estimated repairs</span><span>${{ '{:,.0f}'.format(result.repairs) if result.repairs else '—' }}</span></div>
+            <div class="stat-row"><span>Max offer (MAO)</span><span>${{ '{:,.0f}'.format(result.mao) if result.mao else '—' }}</span></div>
+        </div>
+
+        <div class="card">
+            <h3>Lead quality signals — {{ result.quality.score }}/{{ result.quality.max_score }}</h3>
+            <p class="hint">These don't affect the math above — they're about how easy this seller will be to work with.</p>
+            {% for s in result.quality.signals %}
+            <div class="stat-row">
+                <span>{{ '✅' if s.positive else '⚪' }} {{ s.label }}</span>
+                <span>{{ s.detail }}</span>
+            </div>
+            {% endfor %}
+            {% if result.quality.cautions %}
+            <p style="margin-top:14px; color:#8b1e1e; font-size:14px;">
+                ⚠️ Known issues: {{ result.quality.cautions|join(', ') }} —
+                these can run past a generic repair estimate, worth an in-person look before you commit.
+            </p>
+            {% endif %}
+        </div>
+    {% endif %}
+    <a class="big-button secondary" href="{{ url_for('check') }}">Check Another Address</a>
+{% endif %}
+
+<div class="card">
+    <h2>Check an address</h2>
+    <form method="POST">
+        <label>Property address</label>
+        <div style="position:relative;">
+            <input type="text" name="address" id="address-input" placeholder="123 Main St, Atlanta, GA, 30313" required autocomplete="off">
+            <div id="address-suggestions" style="display:none; position:absolute; top:100%; left:0; right:0; background:white; border:1px solid #ccc; border-top:none; border-radius:0 0 8px 8px; z-index:10; max-height:220px; overflow-y:auto;"></div>
+        </div>
+        <div class="hint">Full address works best: street, city, state, zip.</div>
+
+        <label>Asking price (what the seller wants)</label>
+        <input type="number" name="asking_price" placeholder="150000">
+
+        <label>How rough is the house?</label>
+        <select name="condition">
+            <option value="light">Light — just needs paint/carpet</option>
+            <option value="medium" selected>Medium — kitchen/bath, some systems</option>
+            <option value="heavy">Heavy — full gut rehab</option>
+        </select>
+
+        <label>County (optional)</label>
+        <select name="county">
+            <option value="">— not sure —</option>
+            {% for c in counties %}
+                <option value="{{ c.name }}">{{ c.name }}</option>
+            {% endfor %}
+        </select>
+
+        <h3 style="margin-top:24px;">About the seller (optional, but helpful)</h3>
+
+        <label>Why is the seller selling?</label>
+        <select name="motivation">
+            <option value="unknown">Not sure</option>
+            <option value="probate">Probate (owner passed away)</option>
+            <option value="tax_delinquent">Behind on property taxes</option>
+            <option value="divorce">Divorce</option>
+            <option value="inherited">Inherited, nobody wants it</option>
+            <option value="tired_landlord">Tired landlord</option>
+            <option value="foreclosure">Pre-foreclosure</option>
+            <option value="relocating">Relocating</option>
+        </select>
+
+        <label>Is the house lived in?</label>
+        <select name="occupancy">
+            <option value="unknown">Not sure</option>
+            <option value="vacant">Vacant</option>
+            <option value="owner">Owner lives there</option>
+            <option value="tenant">Tenant lives there</option>
+        </select>
+
+        <label>Does the owner live out of state/area?</label>
+        <select name="out_of_state_owner">
+            <option value="no">No / not sure</option>
+            <option value="yes">Yes</option>
+        </select>
+
+        <label>Mortgage status</label>
+        <select name="mortgage_status">
+            <option value="unknown">Not sure</option>
+            <option value="free_and_clear">Free and clear (no mortgage)</option>
+            <option value="has_mortgage">Has a mortgage</option>
+        </select>
+
+        <label>Any known problems? (check all that apply)</label>
+        <div style="font-size:15px;">
+            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="foundation"> Foundation</label>
+            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="roof"> Roof</label>
+            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="structural"> Structural</label>
+            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="mold"> Mold</label>
+        </div>
+
+        <button class="big-button" type="submit" style="margin-top:16px; border:none;">Check It</button>
+    </form>
+</div>
+
+<script>
+(function () {
+    const input = document.getElementById('address-input');
+    const box = document.getElementById('address-suggestions');
+    let debounceTimer = null;
+    let currentSuggestions = [];
+
+    function hideSuggestions() {
+        box.style.display = 'none';
+        box.innerHTML = '';
+    }
+
+    function showSuggestions(list) {
+        currentSuggestions = list;
+        if (!list.length) { hideSuggestions(); return; }
+        box.innerHTML = list.map((addr, i) =>
+            `<div class="suggestion-item" data-i="${i}" style="padding:10px 12px; cursor:pointer; border-bottom:1px solid #eee; font-size:14px;">${addr}</div>`
+        ).join('');
+        box.style.display = 'block';
+        box.querySelectorAll('.suggestion-item').forEach(el => {
+            el.addEventListener('click', () => {
+                input.value = currentSuggestions[el.dataset.i];
+                hideSuggestions();
+            });
+            el.addEventListener('touchstart', () => { el.style.background = '#f0f0f0'; });
+        });
+    }
+
+    input.addEventListener('input', () => {
+        const query = input.value.trim();
+        clearTimeout(debounceTimer);
+        if (query.length < 5) { hideSuggestions(); return; }
+        debounceTimer = setTimeout(() => {
+            fetch('/api/address-suggest?q=' + encodeURIComponent(query))
+                .then(r => r.ok ? r.json() : [])
+                .then(showSuggestions)
+                .catch(() => hideSuggestions());
+        }, 400);
+    });
+
+    document.addEventListener('click', (e) => {
+        if (e.target !== input && !box.contains(e.target)) hideSuggestions();
+    });
+})();
+</script>
+{% endblock %}
