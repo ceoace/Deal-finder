@@ -97,11 +97,100 @@ def init_db():
             repairs REAL,
             mao REAL,
             is_deal INTEGER,
+            motivation TEXT,
+            occupancy TEXT,
+            out_of_state_owner INTEGER,
+            mortgage_status TEXT,
+            known_issues TEXT,
+            quality_score INTEGER,
+            quality_max INTEGER,
             checked_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Migration for databases created before quality signals were added.
+    existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(leads)")}
+    new_cols = {
+        "motivation": "TEXT", "occupancy": "TEXT", "out_of_state_owner": "INTEGER",
+        "mortgage_status": "TEXT", "known_issues": "TEXT",
+        "quality_score": "INTEGER", "quality_max": "INTEGER",
+    }
+    for col, col_type in new_cols.items():
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {col_type}")
     conn.commit()
     conn.close()
+
+
+DISTRESSED_MOTIVATIONS = {"probate", "tax_delinquent", "divorce", "inherited", "tired_landlord", "foreclosure"}
+
+MOTIVATION_LABELS = {
+    "probate": "Probate (owner passed away)",
+    "tax_delinquent": "Behind on property taxes",
+    "divorce": "Divorce",
+    "inherited": "Inherited, nobody wants it",
+    "tired_landlord": "Tired landlord",
+    "foreclosure": "Pre-foreclosure",
+    "relocating": "Relocating",
+    "unknown": "Not sure / other",
+}
+
+ISSUE_LABELS = {
+    "foundation": "Foundation issue",
+    "roof": "Roof issue",
+    "structural": "Structural issue",
+    "mold": "Mold",
+}
+
+
+def score_lead_quality(motivation, occupancy, out_of_state_owner, mortgage_status, known_issues):
+    """
+    A simple, transparent checklist — not a black-box score. Each 'green
+    flag' present adds a point. Serious known issues are surfaced as a
+    separate caution, since they can blow past a generic repair estimate.
+    """
+    signals = []
+
+    is_distressed = motivation in DISTRESSED_MOTIVATIONS
+    signals.append({
+        "label": "Seller likely motivated",
+        "detail": MOTIVATION_LABELS.get(motivation, "Not sure / other"),
+        "positive": is_distressed,
+    })
+
+    is_vacant = occupancy == "vacant"
+    signals.append({
+        "label": "Property is vacant",
+        "detail": {"vacant": "Vacant", "owner": "Owner lives there",
+                    "tenant": "Tenant lives there", "unknown": "Not sure"}.get(occupancy, "Not sure"),
+        "positive": is_vacant,
+    })
+
+    signals.append({
+        "label": "Owner lives out of state/area",
+        "detail": "Yes" if out_of_state_owner else "No / not sure",
+        "positive": bool(out_of_state_owner),
+    })
+
+    is_free_clear = mortgage_status == "free_and_clear"
+    signals.append({
+        "label": "Free and clear (no mortgage)",
+        "detail": {"free_and_clear": "Free and clear", "has_mortgage": "Has a mortgage",
+                    "unknown": "Not sure"}.get(mortgage_status, "Not sure"),
+        "positive": is_free_clear,
+    })
+
+    score = sum(1 for s in signals if s["positive"])
+    max_score = len(signals)
+
+    issue_list = [i for i in (known_issues or []) if i in ISSUE_LABELS]
+    cautions = [ISSUE_LABELS[i] for i in issue_list]
+
+    return {
+        "signals": signals,
+        "score": score,
+        "max_score": max_score,
+        "cautions": cautions,
+    }
 
 
 # ---------- Core deal math (same logic as before, just reused) ----------
@@ -132,7 +221,10 @@ def calculate_mao(arv, repairs, mao_percent, wholesale_fee):
     return round((arv * mao_percent) - repairs - wholesale_fee)
 
 
-def analyze_address(address, asking_price, condition, county, cfg):
+def analyze_address(address, asking_price, condition, county, cfg,
+                     motivation="unknown", occupancy="unknown",
+                     out_of_state_owner=False, mortgage_status="unknown",
+                     known_issues=None):
     """Returns a dict with all the numbers, ready to save + display."""
     api_key = cfg["rentcast_api_key"]
     mao_percent = cfg.get("mao_percent", 0.70)
@@ -147,6 +239,8 @@ def analyze_address(address, asking_price, condition, county, cfg):
     if mao is not None and asking_price is not None:
         is_deal = asking_price <= mao
 
+    quality = score_lead_quality(motivation, occupancy, out_of_state_owner, mortgage_status, known_issues)
+
     return {
         "address": address,
         "county": county,
@@ -158,18 +252,30 @@ def analyze_address(address, asking_price, condition, county, cfg):
         "mao": mao,
         "is_deal": is_deal,
         "error": error,
+        "motivation": motivation,
+        "occupancy": occupancy,
+        "out_of_state_owner": out_of_state_owner,
+        "mortgage_status": mortgage_status,
+        "known_issues": known_issues or [],
+        "quality": quality,
     }
 
 
 def save_lead(result):
     conn = get_db()
     conn.execute("""
-        INSERT INTO leads (address, county, asking_price, condition, arv, sqft, repairs, mao, is_deal)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO leads (address, county, asking_price, condition, arv, sqft, repairs, mao, is_deal,
+                            motivation, occupancy, out_of_state_owner, mortgage_status, known_issues,
+                            quality_score, quality_max)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         result["address"], result.get("county"), result.get("asking_price"),
         result.get("condition"), result.get("arv"), result.get("sqft"),
         result.get("repairs"), result.get("mao"), int(result.get("is_deal", False)),
+        result.get("motivation"), result.get("occupancy"),
+        int(bool(result.get("out_of_state_owner"))), result.get("mortgage_status"),
+        ",".join(result.get("known_issues") or []),
+        result.get("quality", {}).get("score"), result.get("quality", {}).get("max_score"),
     ))
     conn.commit()
     conn.close()
@@ -198,8 +304,18 @@ def check():
     asking_price = float(asking_price) if asking_price else None
     condition = request.form.get("condition", "medium")
     county = request.form.get("county")
+    motivation = request.form.get("motivation", "unknown")
+    occupancy = request.form.get("occupancy", "unknown")
+    out_of_state_owner = request.form.get("out_of_state_owner") == "yes"
+    mortgage_status = request.form.get("mortgage_status", "unknown")
+    known_issues = request.form.getlist("known_issues")
 
-    result = analyze_address(address, asking_price, condition, county, cfg)
+    result = analyze_address(
+        address, asking_price, condition, county, cfg,
+        motivation=motivation, occupancy=occupancy,
+        out_of_state_owner=out_of_state_owner, mortgage_status=mortgage_status,
+        known_issues=known_issues,
+    )
     save_lead(result)
 
     counties = load_counties()
@@ -232,8 +348,19 @@ def import_leads():
         asking_price = float(asking_price) if asking_price else None
         condition = (row.get("condition") or "medium").strip().lower()
         county = (row.get("county") or "").strip()
+        motivation = (row.get("motivation") or "unknown").strip().lower()
+        occupancy = (row.get("occupancy") or "unknown").strip().lower()
+        out_of_state_owner = (row.get("out_of_state_owner") or "").strip().lower() in ("yes", "true", "1")
+        mortgage_status = (row.get("mortgage_status") or "unknown").strip().lower()
+        known_issues_raw = (row.get("known_issues") or "").strip()
+        known_issues = [i.strip().lower() for i in known_issues_raw.split(";") if i.strip()]
 
-        result = analyze_address(address, asking_price, condition, county, cfg)
+        result = analyze_address(
+            address, asking_price, condition, county, cfg,
+            motivation=motivation, occupancy=occupancy,
+            out_of_state_owner=out_of_state_owner, mortgage_status=mortgage_status,
+            known_issues=known_issues,
+        )
         save_lead(result)
         results.append(result)
         time.sleep(request_delay)
