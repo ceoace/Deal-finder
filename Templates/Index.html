@@ -1,1 +1,30 @@
-templates/index.html
+{% extends "base.html" %}
+{% block title %}Deal Finder — Home{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>What do you want to do?</h2>
+    <p>This app checks if a house is a good deal to wholesale — it does the math for you.</p>
+</div>
+
+<a class="big-button" href="{{ url_for('check') }}">🔍 Check One Address</a>
+<a class="big-button" href="{{ url_for('import_leads') }}">📋 Import a List of Addresses</a>
+<a class="big-button secondary" href="{{ url_for('deals') }}">✅ See My Deals ({{ deal_count }})</a>
+<a class="big-button secondary" href="{{ url_for('sources') }}">📍 Where to Find Leads Near Atlanta</a>
+
+<div class="card">
+    <div class="stat-row"><span>Addresses checked so far</span><span>{{ checked_count }}</span></div>
+    <div class="stat-row"><span>Good deals found</span><span>{{ deal_count }}</span></div>
+</div>
+
+<div class="card">
+    <h3>How it decides</h3>
+    <p style="font-size:14px; color:#555;">
+        For every address, it looks up what the house could sell for after it's
+        fixed up (called the <b>ARV</b>), guesses how much fixing it up would
+        cost, and figures out the most you could pay and still make money
+        (called the <b>MAO</b>, or Maximum Allowable Offer). If the asking
+        price is at or under the MAO, it's a deal. 👍
+    </p>
+</div>
+{% endblock %}
+
