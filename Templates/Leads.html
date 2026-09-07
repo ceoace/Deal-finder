@@ -1,1 +1,25 @@
-templates/leads.html
+{% extends "base.html" %}
+{% block title %}All Checked Leads{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>Everything checked (last 200)</h2>
+</div>
+{% if leads|length == 0 %}
+<div class="card empty-state"><p>Nothing checked yet.</p></div>
+{% else %}
+<div class="card">
+    <table>
+        <tr><th>Address</th><th>Asking</th><th>MAO</th><th>Deal?</th></tr>
+        {% for l in leads %}
+        <tr>
+            <td>{{ l.address }}</td>
+            <td>${{ '{:,.0f}'.format(l.asking_price) if l.asking_price else '—' }}</td>
+            <td>${{ '{:,.0f}'.format(l.mao) if l.mao else '—' }}</td>
+            <td>{% if l.is_deal %}<span class="tag-yes">YES</span>{% else %}<span class="tag-no">no</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+{% endblock %}
+
