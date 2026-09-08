@@ -18,11 +18,9 @@ import csv
 import io
 import json
 import os
-import smtplib
 import sqlite3
 import time
 from datetime import datetime, timezone
-from email.mime.text import MIMEText
 from pathlib import Path
 
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
@@ -63,11 +61,8 @@ def load_config():
             "request_delay_seconds": float(os.environ.get("REQUEST_DELAY_SECONDS", 1.5)),
             "rentcast_monthly_limit": int(os.environ.get("RENTCAST_MONTHLY_LIMIT", 50)),
             "alerts_enabled": os.environ.get("ALERTS_ENABLED", "false").lower() == "true",
-            "smtp_host": os.environ.get("SMTP_HOST", ""),
-            "smtp_port": int(os.environ.get("SMTP_PORT", 587)),
-            "smtp_user": os.environ.get("SMTP_USER", ""),
-            "smtp_password": os.environ.get("SMTP_PASSWORD", ""),
-            "alert_from_email": os.environ.get("ALERT_FROM_EMAIL", ""),
+            "resend_api_key": os.environ.get("RESEND_API_KEY", ""),
+            "alert_from_email": os.environ.get("ALERT_FROM_EMAIL", "onboarding@resend.dev"),
             "alert_to_email": os.environ.get("ALERT_TO_EMAIL", ""),
         }
 
@@ -117,6 +112,7 @@ def init_db():
             out_of_state_owner INTEGER,
             mortgage_status TEXT,
             known_issues TEXT,
+            notes TEXT,
             quality_score INTEGER,
             quality_max INTEGER,
             checked_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -148,7 +144,7 @@ def init_db():
         "mortgage_status": "TEXT", "known_issues": "TEXT",
         "quality_score": "INTEGER", "quality_max": "INTEGER",
         "potential_profit": "REAL", "sqft_source": "TEXT",
-        "status": "TEXT DEFAULT 'new'",
+        "status": "TEXT DEFAULT 'new'", "notes": "TEXT",
     }
     for col, col_type in new_cols.items():
         if col not in existing_cols:
@@ -387,30 +383,48 @@ def save_lead(result):
     conn.close()
 
 
+RESEND_API_URL = "https://api.resend.com/emails"
+
+
 def send_alert(subject, body, cfg):
     """
-    Sends an email — which can just as easily be a carrier's email-to-SMS
-    gateway address (e.g. 5551234567@vtext.com) set as ALERT_TO_EMAIL, so
-    this doubles as a free 'text alert' with no SMS provider needed.
-    Silently no-ops if alerts aren't configured; never raises, so a bad
-    alert config can't break the actual deal-checking flow.
+    Sends via Resend's HTTPS API — deliberately NOT raw SMTP, because
+    Render's free tier blocks outbound SMTP connections at the network
+    level (a known platform limitation, not something fixable in this
+    code). HTTPS to api.resend.com works the same way RentCast/Nominatim
+    already do.
+
+    ALERT_TO_EMAIL can be a real email address, or a carrier's
+    email-to-SMS gateway address (e.g. 5551234567@vtext.com) to arrive
+    as a text — though sending to anything other than your own Resend
+    account email requires verifying a domain first (Resend's anti-spam
+    sandbox restriction). Silently no-ops if alerts aren't configured;
+    never raises, so a bad alert config can't break the deal-checking flow.
     """
     if not cfg.get("alerts_enabled"):
         return
-    required = ["smtp_host", "smtp_user", "smtp_password", "alert_from_email", "alert_to_email"]
+    required = ["resend_api_key", "alert_from_email", "alert_to_email"]
     if not all(cfg.get(k) for k in required):
-        print("Alerts enabled but missing SMTP/alert settings — skipping send.")
+        print("Alerts enabled but missing Resend/alert settings — skipping send.")
         return
     try:
-        msg = MIMEText(body)
-        msg["Subject"] = subject
-        msg["From"] = cfg["alert_from_email"]
-        msg["To"] = cfg["alert_to_email"]
-        with smtplib.SMTP(cfg["smtp_host"], cfg.get("smtp_port", 587), timeout=10) as server:
-            server.starttls()
-            server.login(cfg["smtp_user"], cfg["smtp_password"])
-            server.send_message(msg)
-    except Exception as e:
+        resp = requests.post(
+            RESEND_API_URL,
+            headers={
+                "Authorization": f"Bearer {cfg['resend_api_key']}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": cfg["alert_from_email"],
+                "to": [cfg["alert_to_email"]],
+                "subject": subject,
+                "text": body,
+            },
+            timeout=10,
+        )
+        if resp.status_code >= 300:
+            print(f"Alert send failed: {resp.status_code} {resp.text[:300]}")
+    except requests.RequestException as e:
         print(f"Alert send failed: {e}")
 
 
@@ -419,6 +433,61 @@ def update_lead_status(lead_id, status):
         return
     conn = get_db()
     conn.execute("UPDATE leads SET status = ? WHERE id = ?", (status, lead_id))
+    conn.commit()
+    conn.close()
+
+
+def get_lead(lead_id):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def update_lead(lead_id, asking_price, condition, county, motivation, occupancy,
+                 out_of_state_owner, mortgage_status, known_issues, notes, cfg):
+    """
+    Edits an existing lead's price/condition/seller details and recomputes
+    repairs/MAO/profit/is_deal/quality from the ARV and sqft already saved —
+    no new RentCast lookup needed, since the address itself isn't changing.
+    """
+    lead = get_lead(lead_id)
+    if not lead:
+        return
+
+    mao_percent = cfg.get("mao_percent", 0.70)
+    wholesale_fee = cfg.get("wholesale_fee", 10000)
+    repair_rates = cfg.get("repair_rates_per_sqft", {"light": 10, "medium": 20, "heavy": 35})
+
+    arv = lead["arv"]
+    sqft = lead["sqft"]
+    repairs = estimate_repairs(sqft, condition, repair_rates) if arv else None
+    mao = calculate_mao(arv, repairs, mao_percent, wholesale_fee) if arv else None
+    potential_profit = calculate_profit(arv, repairs, mao_percent, asking_price) if arv else None
+    is_deal = mao is not None and asking_price is not None and asking_price <= mao
+    quality = score_lead_quality(motivation, occupancy, out_of_state_owner, mortgage_status, known_issues)
+
+    conn = get_db()
+    conn.execute("""
+        UPDATE leads SET
+            asking_price = ?, condition = ?, county = ?, repairs = ?, mao = ?,
+            potential_profit = ?, is_deal = ?, motivation = ?, occupancy = ?,
+            out_of_state_owner = ?, mortgage_status = ?, known_issues = ?, notes = ?,
+            quality_score = ?, quality_max = ?
+        WHERE id = ?
+    """, (
+        asking_price, condition, county, repairs, mao, potential_profit, int(is_deal),
+        motivation, occupancy, int(bool(out_of_state_owner)), mortgage_status,
+        ",".join(known_issues or []), notes,
+        quality["score"], quality["max_score"], lead_id,
+    ))
+    conn.commit()
+    conn.close()
+
+
+def delete_lead(lead_id):
+    conn = get_db()
+    conn.execute("DELETE FROM leads WHERE id = ?", (lead_id,))
     conn.commit()
     conn.close()
 
@@ -618,6 +687,43 @@ def update_status(lead_id):
     status = request.form.get("status", "")
     update_lead_status(lead_id, status)
     return redirect(request.form.get("redirect_to") or url_for("deals"))
+
+
+@app.route("/leads/<int:lead_id>/edit", methods=["GET", "POST"])
+def edit_lead(lead_id):
+    lead = get_lead(lead_id)
+    if not lead:
+        flash("That lead doesn't exist (maybe already deleted).")
+        return redirect(url_for("all_leads"))
+
+    if request.method == "POST":
+        cfg = load_config()
+        asking_price = request.form.get("asking_price")
+        asking_price = float(asking_price) if asking_price else None
+        condition = request.form.get("condition", "medium")
+        county = request.form.get("county", "")
+        motivation = request.form.get("motivation", "unknown")
+        occupancy = request.form.get("occupancy", "unknown")
+        out_of_state_owner = request.form.get("out_of_state_owner") == "yes"
+        mortgage_status = request.form.get("mortgage_status", "unknown")
+        known_issues = request.form.getlist("known_issues")
+        notes = request.form.get("notes", "").strip()
+
+        update_lead(
+            lead_id, asking_price, condition, county, motivation, occupancy,
+            out_of_state_owner, mortgage_status, known_issues, notes, cfg,
+        )
+        return redirect(request.form.get("redirect_to") or url_for("all_leads"))
+
+    counties = load_counties()
+    known_issues_list = (lead["known_issues"] or "").split(",") if lead["known_issues"] else []
+    return render_template("edit_lead.html", lead=lead, counties=counties, known_issues_list=known_issues_list)
+
+
+@app.route("/leads/<int:lead_id>/delete", methods=["POST"])
+def delete_lead_route(lead_id):
+    delete_lead(lead_id)
+    return redirect(request.form.get("redirect_to") or url_for("all_leads"))
 
 
 @app.route("/buyers", methods=["GET", "POST"])
