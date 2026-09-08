@@ -15,7 +15,9 @@
         <tr><th>Address</th><th>County</th><th>Asking</th><th>MAO</th><th>Profit</th><th>Quality</th><th>Status</th><th></th></tr>
         {% for d in deals %}
         <tr>
-            <td>{{ d.address }}{% if d.notes %}<br><span class="hint">{{ d.notes }}</span>{% endif %}</td>
+            <td>{{ d.address }}
+                {% if d.seller_name or d.seller_phone %}<br><span class="hint">📞 {{ d.seller_name or '' }} {{ d.seller_phone or '' }}</span>{% endif %}
+                {% if d.notes %}<br><span class="hint">{{ d.notes }}</span>{% endif %}</td>
             <td>{{ d.county or '—' }}</td>
             <td>${{ '{:,.0f}'.format(d.asking_price) if d.asking_price else '—' }}</td>
             <td>${{ '{:,.0f}'.format(d.mao) if d.mao else '—' }}</td>
