@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Edit Lead{% endblock %}
+{% block content %}
+
+<div class="card">
+    <h2>Edit this lead</h2>
+    <p class="hint">{{ lead.address }}</p>
+    <p class="hint">
+        The address itself can't be changed here (that needs a fresh lookup —
+        use <a class="plain" href="{{ url_for('check') }}">Check an Address</a>
+        instead). Everything else below updates instantly without using
+        another RentCast lookup.
+    </p>
+
+    <form method="POST">
+        <input type="hidden" name="redirect_to" value="{{ request.referrer or url_for('all_leads') }}">
+
+        <label>Asking price</label>
+        <input type="number" name="asking_price" value="{{ lead.asking_price|int if lead.asking_price else '' }}">
+
+        <label>How rough is the house?</label>
+        <select name="condition">
+            <option value="light" {% if lead.condition == 'light' %}selected{% endif %}>Light — just needs paint/carpet</option>
+            <option value="medium" {% if lead.condition == 'medium' %}selected{% endif %}>Medium — kitchen/bath, some systems</option>
+            <option value="heavy" {% if lead.condition == 'heavy' %}selected{% endif %}>Heavy — full gut rehab</option>
+        </select>
+
+        <label>County</label>
+        <select name="county">
+            <option value="">— not sure —</option>
+            {% for c in counties %}
+                <option value="{{ c.name }}" {% if lead.county == c.name %}selected{% endif %}>{{ c.name }}</option>
+            {% endfor %}
+        </select>
+
+        <h3 style="margin-top:24px;">About the seller</h3>
+
+        <label>Why is the seller selling?</label>
+        <select name="motivation">
+            <option value="unknown" {% if lead.motivation == 'unknown' %}selected{% endif %}>Not sure</option>
+            <option value="probate" {% if lead.motivation == 'probate' %}selected{% endif %}>Probate (owner passed away)</option>
+            <option value="tax_delinquent" {% if lead.motivation == 'tax_delinquent' %}selected{% endif %}>Behind on property taxes</option>
+            <option value="divorce" {% if lead.motivation == 'divorce' %}selected{% endif %}>Divorce</option>
+            <option value="inherited" {% if lead.motivation == 'inherited' %}selected{% endif %}>Inherited, nobody wants it</option>
+            <option value="tired_landlord" {% if lead.motivation == 'tired_landlord' %}selected{% endif %}>Tired landlord</option>
+            <option value="foreclosure" {% if lead.motivation == 'foreclosure' %}selected{% endif %}>Pre-foreclosure</option>
+            <option value="relocating" {% if lead.motivation == 'relocating' %}selected{% endif %}>Relocating</option>
+        </select>
+
+        <label>Is the house lived in?</label>
+        <select name="occupancy">
+            <option value="unknown" {% if lead.occupancy == 'unknown' %}selected{% endif %}>Not sure</option>
+            <option value="vacant" {% if lead.occupancy == 'vacant' %}selected{% endif %}>Vacant</option>
+            <option value="owner" {% if lead.occupancy == 'owner' %}selected{% endif %}>Owner lives there</option>
+            <option value="tenant" {% if lead.occupancy == 'tenant' %}selected{% endif %}>Tenant lives there</option>
+        </select>
+
+        <label>Does the owner live out of state/area?</label>
+        <select name="out_of_state_owner">
+            <option value="no" {% if not lead.out_of_state_owner %}selected{% endif %}>No / not sure</option>
+            <option value="yes" {% if lead.out_of_state_owner %}selected{% endif %}>Yes</option>
+        </select>
+
+        <label>Mortgage status</label>
+        <select name="mortgage_status">
+            <option value="unknown" {% if lead.mortgage_status == 'unknown' %}selected{% endif %}>Not sure</option>
+            <option value="free_and_clear" {% if lead.mortgage_status == 'free_and_clear' %}selected{% endif %}>Free and clear (no mortgage)</option>
+            <option value="has_mortgage" {% if lead.mortgage_status == 'has_mortgage' %}selected{% endif %}>Has a mortgage</option>
+        </select>
+
+        <label>Any known problems? (check all that apply)</label>
+        <div style="font-size:15px;">
+            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="foundation" {% if 'foundation' in known_issues_list %}checked{% endif %}> Foundation</label>
+            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="roof" {% if 'roof' in known_issues_list %}checked{% endif %}> Roof</label>
+            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="structural" {% if 'structural' in known_issues_list %}checked{% endif %}> Structural</label>
+            <label class="checkbox-label"><input type="checkbox" name="known_issues" value="mold" {% if 'mold' in known_issues_list %}checked{% endif %}> Mold</label>
+        </div>
+
+        <label>Notes</label>
+        <input type="text" name="notes" placeholder="e.g. talked to owner, wants $5k more" value="{{ lead.notes or '' }}">
+
+        <button class="big-button" type="submit" style="margin-top:16px; border:none;">Save Changes</button>
+    </form>
+</div>
+
+<div class="card">
+    <form method="POST" action="{{ url_for('delete_lead_route', lead_id=lead.id) }}" onsubmit="return confirm('Delete this lead permanently? This can\'t be undone.');">
+        <input type="hidden" name="redirect_to" value="{{ request.referrer or url_for('all_leads') }}">
+        <button type="submit" class="big-button" style="background:#8b1e1e; border:none;">Delete This Lead</button>
+    </form>
+</div>
+{% endblock %}
