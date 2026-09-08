@@ -107,6 +107,9 @@ def init_db():
             potential_profit REAL,
             is_deal INTEGER,
             status TEXT DEFAULT 'new',
+            seller_name TEXT,
+            seller_phone TEXT,
+            seller_email TEXT,
             motivation TEXT,
             occupancy TEXT,
             out_of_state_owner INTEGER,
@@ -145,6 +148,7 @@ def init_db():
         "quality_score": "INTEGER", "quality_max": "INTEGER",
         "potential_profit": "REAL", "sqft_source": "TEXT",
         "status": "TEXT DEFAULT 'new'", "notes": "TEXT",
+        "seller_name": "TEXT", "seller_phone": "TEXT", "seller_email": "TEXT",
     }
     for col, col_type in new_cols.items():
         if col not in existing_cols:
@@ -315,7 +319,8 @@ def calculate_profit(arv, repairs, mao_percent, asking_price):
 def analyze_address(address, asking_price, condition, county, cfg,
                      motivation="unknown", occupancy="unknown",
                      out_of_state_owner=False, mortgage_status="unknown",
-                     known_issues=None, manual_sqft=None):
+                     known_issues=None, manual_sqft=None,
+                     seller_name="", seller_phone="", seller_email=""):
     """Returns a dict with all the numbers, ready to save + display."""
     api_key = cfg["rentcast_api_key"]
     mao_percent = cfg.get("mao_percent", 0.70)
@@ -353,6 +358,9 @@ def analyze_address(address, asking_price, condition, county, cfg,
         "is_deal": is_deal,
         "error": error,
         "comps": comps,
+        "seller_name": seller_name,
+        "seller_phone": seller_phone,
+        "seller_email": seller_email,
         "motivation": motivation,
         "occupancy": occupancy,
         "out_of_state_owner": out_of_state_owner,
@@ -366,14 +374,16 @@ def save_lead(result):
     conn = get_db()
     conn.execute("""
         INSERT INTO leads (address, county, asking_price, condition, arv, sqft, sqft_source, repairs, mao, potential_profit, is_deal,
+                            seller_name, seller_phone, seller_email,
                             motivation, occupancy, out_of_state_owner, mortgage_status, known_issues,
                             quality_score, quality_max)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         result["address"], result.get("county"), result.get("asking_price"),
         result.get("condition"), result.get("arv"), result.get("sqft"), result.get("sqft_source"),
         result.get("repairs"), result.get("mao"), result.get("potential_profit"),
         int(result.get("is_deal", False)),
+        result.get("seller_name"), result.get("seller_phone"), result.get("seller_email"),
         result.get("motivation"), result.get("occupancy"),
         int(bool(result.get("out_of_state_owner"))), result.get("mortgage_status"),
         ",".join(result.get("known_issues") or []),
@@ -445,7 +455,8 @@ def get_lead(lead_id):
 
 
 def update_lead(lead_id, asking_price, condition, county, motivation, occupancy,
-                 out_of_state_owner, mortgage_status, known_issues, notes, cfg):
+                 out_of_state_owner, mortgage_status, known_issues, notes, cfg,
+                 seller_name="", seller_phone="", seller_email=""):
     """
     Edits an existing lead's price/condition/seller details and recomputes
     repairs/MAO/profit/is_deal/quality from the ARV and sqft already saved —
@@ -471,12 +482,14 @@ def update_lead(lead_id, asking_price, condition, county, motivation, occupancy,
     conn.execute("""
         UPDATE leads SET
             asking_price = ?, condition = ?, county = ?, repairs = ?, mao = ?,
-            potential_profit = ?, is_deal = ?, motivation = ?, occupancy = ?,
+            potential_profit = ?, is_deal = ?, seller_name = ?, seller_phone = ?, seller_email = ?,
+            motivation = ?, occupancy = ?,
             out_of_state_owner = ?, mortgage_status = ?, known_issues = ?, notes = ?,
             quality_score = ?, quality_max = ?
         WHERE id = ?
     """, (
         asking_price, condition, county, repairs, mao, potential_profit, int(is_deal),
+        seller_name, seller_phone, seller_email,
         motivation, occupancy, int(bool(out_of_state_owner)), mortgage_status,
         ",".join(known_issues or []), notes,
         quality["score"], quality["max_score"], lead_id,
@@ -575,12 +588,16 @@ def check():
     known_issues = request.form.getlist("known_issues")
     manual_sqft = request.form.get("square_footage")
     manual_sqft = float(manual_sqft) if manual_sqft else None
+    seller_name = request.form.get("seller_name", "").strip()
+    seller_phone = request.form.get("seller_phone", "").strip()
+    seller_email = request.form.get("seller_email", "").strip()
 
     result = analyze_address(
         address, asking_price, condition, county, cfg,
         motivation=motivation, occupancy=occupancy,
         out_of_state_owner=out_of_state_owner, mortgage_status=mortgage_status,
         known_issues=known_issues, manual_sqft=manual_sqft,
+        seller_name=seller_name, seller_phone=seller_phone, seller_email=seller_email,
     )
     save_lead(result)
 
@@ -591,11 +608,18 @@ def check():
         result["matching_buyers"] = []
 
     if result.get("is_deal"):
+        seller_line = ""
+        if result.get("seller_name") or result.get("seller_phone") or result.get("seller_email"):
+            seller_line = (
+                f"\nSeller: {result.get('seller_name') or '(no name)'}"
+                f"  {result.get('seller_phone') or ''}  {result.get('seller_email') or ''}"
+            )
         send_alert(
             f"Deal found: {result['address']}",
             f"{result['address']}\n"
             f"Asking: ${result['asking_price']:,.0f}  MAO: ${result['mao']:,.0f}  "
-            f"Profit: ${result['potential_profit']:,.0f}",
+            f"Profit: ${result['potential_profit']:,.0f}"
+            f"{seller_line}",
             cfg,
         )
 
@@ -637,12 +661,16 @@ def import_leads():
         known_issues = [i.strip().lower() for i in known_issues_raw.split(";") if i.strip()]
         manual_sqft = row.get("square_footage")
         manual_sqft = float(manual_sqft) if manual_sqft else None
+        seller_name = (row.get("seller_name") or "").strip()
+        seller_phone = (row.get("seller_phone") or "").strip()
+        seller_email = (row.get("seller_email") or "").strip()
 
         result = analyze_address(
             address, asking_price, condition, county, cfg,
             motivation=motivation, occupancy=occupancy,
             out_of_state_owner=out_of_state_owner, mortgage_status=mortgage_status,
             known_issues=known_issues, manual_sqft=manual_sqft,
+            seller_name=seller_name, seller_phone=seller_phone, seller_email=seller_email,
         )
         save_lead(result)
         results.append(result)
@@ -708,10 +736,14 @@ def edit_lead(lead_id):
         mortgage_status = request.form.get("mortgage_status", "unknown")
         known_issues = request.form.getlist("known_issues")
         notes = request.form.get("notes", "").strip()
+        seller_name = request.form.get("seller_name", "").strip()
+        seller_phone = request.form.get("seller_phone", "").strip()
+        seller_email = request.form.get("seller_email", "").strip()
 
         update_lead(
             lead_id, asking_price, condition, county, motivation, occupancy,
             out_of_state_owner, mortgage_status, known_issues, notes, cfg,
+            seller_name=seller_name, seller_phone=seller_phone, seller_email=seller_email,
         )
         return redirect(request.form.get("redirect_to") or url_for("all_leads"))
 
