@@ -116,6 +116,7 @@ def init_db():
             mortgage_status TEXT,
             known_issues TEXT,
             notes TEXT,
+            source TEXT DEFAULT 'manual',
             quality_score INTEGER,
             quality_max INTEGER,
             checked_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -149,6 +150,7 @@ def init_db():
         "potential_profit": "REAL", "sqft_source": "TEXT",
         "status": "TEXT DEFAULT 'new'", "notes": "TEXT",
         "seller_name": "TEXT", "seller_phone": "TEXT", "seller_email": "TEXT",
+        "source": "TEXT DEFAULT 'manual'",
     }
     for col, col_type in new_cols.items():
         if col not in existing_cols:
@@ -291,6 +293,75 @@ def get_value_estimate(address, api_key):
     return arv, sqft, None, comps
 
 
+RENTCAST_LISTINGS_URL = "https://api.rentcast.io/v1/listings/sale"
+
+DISTRESS_KEYWORDS = [
+    "as-is", "as is", "fixer", "fixer-upper", "handyman", "tlc", "cash only",
+    "investor special", "needs work", "distressed", "estate sale", "probate",
+    "must sell", "motivated seller", "rehab", "no disclosures", "sold as-is",
+    "great investment", "bring your contractor", "gut rehab",
+]
+
+
+def get_sale_listings(city, state, zip_code, limit, api_key):
+    """
+    Pulls active for-sale listings from RentCast's own listings database —
+    the same API key you already have, a different endpoint. Costs one
+    API call total regardless of how many listings come back (unlike the
+    per-address ARV lookup, which costs one call each).
+
+    RentCast's exact response shape isn't something we've verified against
+    a live key yet, so this parses defensively: it accepts either a bare
+    list or a dict wrapping the list under a couple of likely key names,
+    and never assumes a description field exists (some plans don't return
+    listing remarks) — if it's missing, distress-keyword tagging just
+    comes back empty rather than breaking.
+    """
+    headers = {"X-Api-Key": api_key}
+    params = {"status": "Active", "limit": limit}
+    if zip_code:
+        params["zipCode"] = zip_code
+    elif city and state:
+        params["city"] = city
+        params["state"] = state
+    else:
+        return [], "Enter either a city + state, or a zip code."
+
+    resp = requests.get(RENTCAST_LISTINGS_URL, headers=headers, params=params, timeout=20)
+    increment_api_usage()
+
+    if resp.status_code != 200:
+        return [], resp.text[:200]
+
+    data = resp.json()
+    if isinstance(data, list):
+        raw_listings = data
+    elif isinstance(data, dict):
+        raw_listings = data.get("listings") or data.get("data") or []
+    else:
+        raw_listings = []
+
+    listings = []
+    for item in raw_listings:
+        description = (
+            item.get("description") or item.get("remarks")
+            or item.get("publicRemarks") or ""
+        )
+        text_blob = f"{description} {item.get('listingType') or ''}".lower()
+        matched_keywords = [k for k in DISTRESS_KEYWORDS if k in text_blob]
+
+        listings.append({
+            "address": item.get("formattedAddress") or item.get("addressLine1") or "Unknown address",
+            "price": item.get("price"),
+            "sqft": item.get("squareFootage"),
+            "days_on_market": item.get("daysOnMarket"),
+            "description": description,
+            "distress_keywords": matched_keywords,
+        })
+
+    return listings, None
+
+
 def estimate_repairs(sqft, condition, repair_rates):
     if not sqft:
         return None
@@ -370,14 +441,14 @@ def analyze_address(address, asking_price, condition, county, cfg,
     }
 
 
-def save_lead(result):
+def save_lead(result, source="manual"):
     conn = get_db()
     conn.execute("""
         INSERT INTO leads (address, county, asking_price, condition, arv, sqft, sqft_source, repairs, mao, potential_profit, is_deal,
                             seller_name, seller_phone, seller_email,
                             motivation, occupancy, out_of_state_owner, mortgage_status, known_issues,
-                            quality_score, quality_max)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            quality_score, quality_max, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         result["address"], result.get("county"), result.get("asking_price"),
         result.get("condition"), result.get("arv"), result.get("sqft"), result.get("sqft_source"),
@@ -388,6 +459,7 @@ def save_lead(result):
         int(bool(result.get("out_of_state_owner"))), result.get("mortgage_status"),
         ",".join(result.get("known_issues") or []),
         result.get("quality", {}).get("score"), result.get("quality", {}).get("max_score"),
+        source,
     ))
     conn.commit()
     conn.close()
@@ -783,6 +855,61 @@ def buyers():
 def delete_buyer_route(buyer_id):
     delete_buyer(buyer_id)
     return redirect(url_for("buyers"))
+
+
+@app.route("/discover", methods=["GET", "POST"])
+def discover():
+    counties = load_counties()
+
+    if request.method == "GET":
+        return render_template("discover.html", listings=None, analyzed=None, counties=counties)
+
+    cfg = load_config()
+    city = request.form.get("city", "").strip()
+    state = request.form.get("state", "").strip().upper()
+    zip_code = request.form.get("zip_code", "").strip()
+    max_price = request.form.get("max_price")
+    max_price = float(max_price) if max_price else None
+    search_count = min(int(request.form.get("search_count") or 25), 100)
+    analyze_count = min(int(request.form.get("analyze_count") or 5), 15)
+    condition = request.form.get("condition", "medium")
+    county = request.form.get("county", "")
+
+    listings, error = get_sale_listings(city, state, zip_code, search_count, cfg["rentcast_api_key"])
+
+    if error:
+        flash(f"Couldn't search listings: {error}")
+        return render_template("discover.html", listings=None, analyzed=None, counties=counties)
+
+    if max_price:
+        listings = [l for l in listings if l["price"] is None or l["price"] <= max_price]
+
+    # Distressed-language matches first, then cheapest — that's the shortlist worth spending API calls on.
+    listings.sort(key=lambda l: (0 if l["distress_keywords"] else 1, l["price"] or 0))
+
+    shortlist = listings[:analyze_count]
+    analyzed = []
+    for listing in shortlist:
+        result = analyze_address(
+            listing["address"], listing["price"], condition, county, cfg,
+            manual_sqft=listing["sqft"],
+        )
+        save_lead(result, source="discovery")
+        analyzed.append(result)
+        time.sleep(cfg.get("request_delay_seconds", 1.5))
+
+    new_deals = [r for r in analyzed if r.get("is_deal")]
+    if new_deals:
+        lines = [
+            f"{r['address']} — Asking ${r['asking_price']:,.0f}, Profit ${r['potential_profit']:,.0f}"
+            for r in new_deals[:5]
+        ]
+        send_alert(f"{len(new_deals)} deal(s) found via Find Deals", "\n".join(lines), cfg)
+
+    return render_template(
+        "discover.html", listings=listings, analyzed=analyzed, counties=counties,
+        searched_count=len(listings), analyzed_count=len(shortlist),
+    )
 
 
 @app.route("/sources")
