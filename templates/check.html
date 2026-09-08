@@ -10,6 +10,19 @@
             <p class="hint">Double check the spelling, or make sure it's a full address (street, city, state, zip).</p>
         </div>
     {% else %}
+        {% if result.repairs is none %}
+        <div class="card" style="background:#fff3cd;">
+            <p><b>⚠️ Couldn't estimate repairs for this one.</b></p>
+            <p class="hint">
+                We couldn't find a square footage on file for this address, so
+                repairs, MAO, and profit couldn't be calculated. Scroll down and
+                enter the square footage yourself (check the listing, county
+                records, or measure it) — everything else you entered is still
+                filled in below, so you just need to add that one number and
+                hit Check It again.
+            </p>
+        </div>
+        {% endif %}
         <div class="result-banner {{ 'result-yes' if result.is_deal else 'result-no' }}">
             {% if result.is_deal %}
                 ✅ Looks like a good deal!
@@ -27,10 +40,30 @@
             </p>
             <div class="stat-row"><span>Address</span><span>{{ result.address }}</span></div>
             <div class="stat-row"><span>Asking price</span><span>${{ '{:,.0f}'.format(result.asking_price) if result.asking_price else '—' }}</span></div>
+            <div class="stat-row">
+                <span>Square footage</span>
+                <span>
+                    {{ result.sqft|int if result.sqft else '—' }}
+                    {% if result.sqft_source == 'manual' %}<span class="hint">(you entered this)</span>{% elif result.sqft_source == 'auto' %}<span class="hint">(found automatically)</span>{% endif %}
+                </span>
+            </div>
             <div class="stat-row"><span>After-Repair Value (ARV)</span><span>${{ '{:,.0f}'.format(result.arv) if result.arv else '—' }}</span></div>
             <div class="stat-row"><span>Estimated repairs</span><span>${{ '{:,.0f}'.format(result.repairs) if result.repairs else '—' }}</span></div>
             <div class="stat-row"><span>Max offer (MAO)</span><span>${{ '{:,.0f}'.format(result.mao) if result.mao else '—' }}</span></div>
         </div>
+
+        {% if result.comps %}
+        <div class="card">
+            <h3>Comps behind that ARV number</h3>
+            <p class="hint">Recent nearby sales RentCast used to estimate the after-repair value — worth a gut-check against what you know about the area.</p>
+            {% for c in result.comps %}
+            <div class="stat-row">
+                <span>{{ c.address }}{% if c.distance %} <span class="hint">({{ '%.1f'|format(c.distance) }} mi)</span>{% endif %}</span>
+                <span>{% if c.price %}${{ '{:,.0f}'.format(c.price) }}{% else %}—{% endif %}{% if c.sqft %} <span class="hint">/ {{ c.sqft|int }} sqft</span>{% endif %}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
 
         {% if result.potential_profit is not none %}
         <div class="card" style="background:{{ '#d7f0dd' if result.potential_profit >= 0 else '#fbe1e1' }};">
@@ -45,6 +78,19 @@
                     At this asking price, there isn't room left for a profit once repairs are covered.
                 {% endif %}
             </p>
+        </div>
+        {% endif %}
+
+        {% if result.matching_buyers %}
+        <div class="card">
+            <h3>Matching cash buyers</h3>
+            <p class="hint">From your <a class="plain" href="{{ url_for('buyers') }}">Cash Buyers</a> list — these fit this deal's price range and area.</p>
+            {% for b in result.matching_buyers %}
+            <div class="stat-row">
+                <span>{{ b.name }}</span>
+                <span>{{ b.phone or b.email or '—' }}</span>
+            </div>
+            {% endfor %}
         </div>
         {% endif %}
 
@@ -73,19 +119,23 @@
     <form method="POST">
         <label>Property address</label>
         <div style="position:relative;">
-            <input type="text" name="address" id="address-input" placeholder="123 Main St, Atlanta, GA, 30313" required autocomplete="off">
+            <input type="text" name="address" id="address-input" placeholder="123 Main St, Atlanta, GA, 30313" value="{{ result.address if result and not result.error else '' }}" required autocomplete="off">
             <div id="address-suggestions" style="display:none; position:absolute; top:100%; left:0; right:0; background:white; border:1px solid #ccc; border-top:none; border-radius:0 0 8px 8px; z-index:10; max-height:220px; overflow-y:auto;"></div>
         </div>
         <div class="hint">Full address works best: street, city, state, zip.</div>
 
         <label>Asking price (what the seller wants)</label>
-        <input type="number" name="asking_price" placeholder="150000">
+        <input type="number" name="asking_price" placeholder="150000" value="{{ result.asking_price|int if result and result.asking_price else '' }}">
+
+        <label>Square footage (only if we couldn't find it automatically)</label>
+        <input type="number" name="square_footage" placeholder="e.g. 1200" value="{{ result.sqft|int if result and result.sqft_source == 'manual' else '' }}">
+        <div class="hint">Leave blank to use the automatic lookup. Fill this in only if the result above said it couldn't find square footage.</div>
 
         <label>How rough is the house?</label>
         <select name="condition">
-            <option value="light">Light — just needs paint/carpet</option>
-            <option value="medium" selected>Medium — kitchen/bath, some systems</option>
-            <option value="heavy">Heavy — full gut rehab</option>
+            <option value="light" {% if result and result.condition == 'light' %}selected{% endif %}>Light — just needs paint/carpet</option>
+            <option value="medium" {% if not result or result.condition == 'medium' %}selected{% endif %}>Medium — kitchen/bath, some systems</option>
+            <option value="heavy" {% if result and result.condition == 'heavy' %}selected{% endif %}>Heavy — full gut rehab</option>
         </select>
 
         <label>County (optional)</label>
