@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Find Deals{% endblock %}
+{% block content %}
+
+<div class="card">
+    <h2>Find deals automatically</h2>
+    <p class="hint">
+        Searches active listings in an area, flags the ones with distressed
+        language ("as-is," "fixer," "cash only," etc.) in the description,
+        and fully analyzes the most promising ones — same math as
+        Check an Address, just skipping the part where you type each
+        address in by hand.
+    </p>
+    <p class="hint">
+        ⚠️ Each search uses <b>1 lookup</b>. Each listing it fully analyzes
+        uses <b>1 more</b>. Keep "how many to fully analyze" small — on the
+        free RentCast tier (50/month) this adds up fast.
+    </p>
+
+    <form method="POST">
+        <label>City</label>
+        <input type="text" name="city" placeholder="Atlanta">
+
+        <label>State</label>
+        <input type="text" name="state" placeholder="GA" maxlength="2">
+
+        <div class="hint">— or use a zip code instead of city/state —</div>
+
+        <label>Zip code</label>
+        <input type="text" name="zip_code" placeholder="30313">
+
+        <label>Max price</label>
+        <input type="number" name="max_price" placeholder="150000">
+
+        <label>How many listings to search</label>
+        <input type="number" name="search_count" value="25">
+        <div class="hint">Up to 100. This is the 1 search call, regardless of the number.</div>
+
+        <label>How many to fully analyze (ARV/MAO/profit)</label>
+        <input type="number" name="analyze_count" value="5">
+        <div class="hint">Up to 15. Each one uses a separate RentCast lookup — keep this small.</div>
+
+        <label>Assume this condition for analyzed listings</label>
+        <select name="condition">
+            <option value="light">Light — just needs paint/carpet</option>
+            <option value="medium" selected>Medium — kitchen/bath, some systems</option>
+            <option value="heavy">Heavy — full gut rehab</option>
+        </select>
+
+        <label>County (optional, for buyer matching)</label>
+        <select name="county">
+            <option value="">— not sure —</option>
+            {% for c in counties %}
+                <option value="{{ c.name }}">{{ c.name }}</option>
+            {% endfor %}
+        </select>
+
+        <button class="big-button" type="submit" style="margin-top:16px; border:none;">Search &amp; Analyze</button>
+    </form>
+</div>
+
+{% if listings is not none %}
+<div class="card">
+    <h3>Found {{ listings|length }} listing{{ 's' if listings|length != 1 }} in budget</h3>
+    {% if listings|length == 0 %}
+    <p class="hint">No listings came back for that area/price. Try a wider price range or a nearby zip.</p>
+    {% else %}
+    <table>
+        <tr><th>Address</th><th>Price</th><th>Signals</th></tr>
+        {% for l in listings %}
+        <tr>
+            <td>{{ l.address }}</td>
+            <td>{% if l.price %}${{ '{:,.0f}'.format(l.price) }}{% else %}—{% endif %}</td>
+            <td>{% if l.distress_keywords %}🔥 {{ l.distress_keywords|join(', ') }}{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    <p class="hint" style="margin-top:12px;">Top {{ analyzed_count }} (distressed-language first, then cheapest) were fully analyzed below.</p>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if analyzed %}
+<div class="card">
+    <h3>Analyzed results</h3>
+    <table>
+        <tr><th>Address</th><th>Asking</th><th>MAO</th><th>Profit</th><th>Deal?</th></tr>
+        {% for r in analyzed %}
+        <tr>
+            <td>{{ r.address }}</td>
+            <td>{% if r.asking_price %}${{ '{:,.0f}'.format(r.asking_price) }}{% else %}—{% endif %}</td>
+            <td>{% if r.mao %}${{ '{:,.0f}'.format(r.mao) }}{% else %}—{% endif %}</td>
+            <td>{% if r.potential_profit is not none %}${{ '{:,.0f}'.format(r.potential_profit) }}{% else %}—{% endif %}</td>
+            <td>
+                {% if r.error %}
+                    <span class="tag-no">error</span>
+                {% elif r.is_deal %}
+                    <span class="tag-yes">YES</span>
+                {% else %}
+                    <span class="tag-no">no</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+    <p class="hint" style="margin-top:12px;">
+        All of these were saved to <a class="plain" href="{{ url_for('all_leads') }}">All Checked Leads</a> —
+        any that cleared your MAO also show up in <a class="plain" href="{{ url_for('deals') }}">My Deals</a>.
+    </p>
+</div>
+{% endif %}
+{% endblock %}
