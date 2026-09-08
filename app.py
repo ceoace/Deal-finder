@@ -128,6 +128,19 @@ def init_db():
             count INTEGER NOT NULL DEFAULT 0
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS buyers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            phone TEXT,
+            email TEXT,
+            min_price REAL,
+            max_price REAL,
+            counties TEXT,
+            notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     # Migration for databases created before quality signals were added.
     existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(leads)")}
     new_cols = {
@@ -410,6 +423,51 @@ def update_lead_status(lead_id, status):
     conn.close()
 
 
+def add_buyer(name, phone, email, min_price, max_price, counties, notes):
+    conn = get_db()
+    conn.execute("""
+        INSERT INTO buyers (name, phone, email, min_price, max_price, counties, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (name, phone, email, min_price, max_price, counties, notes))
+    conn.commit()
+    conn.close()
+
+
+def delete_buyer(buyer_id):
+    conn = get_db()
+    conn.execute("DELETE FROM buyers WHERE id = ?", (buyer_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_all_buyers():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM buyers ORDER BY name COLLATE NOCASE").fetchall()
+    conn.close()
+    return rows
+
+
+def get_matching_buyers(asking_price, ceiling_price, county):
+    """
+    A buyer matches if the deal's entry price is within budget (their max
+    covers at least the asking price) and their floor doesn't exceed what
+    an end buyer could realistically pay (the ceiling price). County is
+    only checked if the buyer specified any — an empty list means 'anywhere'.
+    """
+    buyers = get_all_buyers()
+    matches = []
+    for b in buyers:
+        if b["max_price"] is not None and asking_price is not None and asking_price > b["max_price"]:
+            continue
+        if b["min_price"] is not None and ceiling_price is not None and ceiling_price < b["min_price"]:
+            continue
+        buyer_counties = [c.strip().lower() for c in (b["counties"] or "").split(",") if c.strip()]
+        if buyer_counties and (not county or county.lower() not in buyer_counties):
+            continue
+        matches.append(b)
+    return matches
+
+
 # ---------- Routes ----------
 
 @app.route("/")
@@ -456,6 +514,12 @@ def check():
         known_issues=known_issues, manual_sqft=manual_sqft,
     )
     save_lead(result)
+
+    if result.get("mao") is not None:
+        ceiling_price = result["mao"] + cfg.get("wholesale_fee", 10000)
+        result["matching_buyers"] = get_matching_buyers(result.get("asking_price"), ceiling_price, county)
+    else:
+        result["matching_buyers"] = []
 
     if result.get("is_deal"):
         send_alert(
@@ -554,6 +618,33 @@ def update_status(lead_id):
     status = request.form.get("status", "")
     update_lead_status(lead_id, status)
     return redirect(request.form.get("redirect_to") or url_for("deals"))
+
+
+@app.route("/buyers", methods=["GET", "POST"])
+def buyers():
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        if not name:
+            flash("Buyer needs at least a name.")
+            return redirect(url_for("buyers"))
+        phone = request.form.get("phone", "").strip()
+        email = request.form.get("email", "").strip()
+        min_price = request.form.get("min_price")
+        min_price = float(min_price) if min_price else None
+        max_price = request.form.get("max_price")
+        max_price = float(max_price) if max_price else None
+        counties = request.form.get("counties", "").strip()
+        notes = request.form.get("notes", "").strip()
+        add_buyer(name, phone, email, min_price, max_price, counties, notes)
+        return redirect(url_for("buyers"))
+
+    return render_template("buyers.html", buyers=get_all_buyers())
+
+
+@app.route("/buyers/<int:buyer_id>/delete", methods=["POST"])
+def delete_buyer_route(buyer_id):
+    delete_buyer(buyer_id)
+    return redirect(url_for("buyers"))
 
 
 @app.route("/sources")
