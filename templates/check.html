@@ -52,6 +52,15 @@
             <div class="stat-row"><span>Max offer (MAO)</span><span>${{ '{:,.0f}'.format(result.mao) if result.mao else '—' }}</span></div>
         </div>
 
+        {% if result.is_deal and (result.seller_name or result.seller_phone or result.seller_email) %}
+        <div class="card" style="background:#1a4d2e; color:white;">
+            <h3 style="margin-top:0; color:white;">📞 Seller contact</h3>
+            {% if result.seller_name %}<p style="margin:4px 0; font-size:16px;"><b>{{ result.seller_name }}</b></p>{% endif %}
+            {% if result.seller_phone %}<p style="margin:4px 0; font-size:16px;">{{ result.seller_phone }}</p>{% endif %}
+            {% if result.seller_email %}<p style="margin:4px 0; font-size:16px;">{{ result.seller_email }}</p>{% endif %}
+        </div>
+        {% endif %}
+
         {% if result.comps %}
         <div class="card">
             <h3>Comps behind that ARV number</h3>
@@ -147,6 +156,15 @@
         </select>
 
         <h3 style="margin-top:24px;">About the seller (optional, but helpful)</h3>
+
+        <label>Seller's name (if you have it)</label>
+        <input type="text" name="seller_name" placeholder="e.g. Jane Smith">
+
+        <label>Seller's phone</label>
+        <input type="text" name="seller_phone" placeholder="404-555-1234">
+
+        <label>Seller's email</label>
+        <input type="text" name="seller_email" placeholder="jane@example.com">
 
         <label>Why is the seller selling?</label>
         <select name="motivation">
