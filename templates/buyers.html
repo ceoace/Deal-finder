@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Cash Buyers{% endblock %}
+{% block content %}
+
+<div class="card">
+    <h2>Add a cash buyer</h2>
+    <p class="hint">Add the investors you know so the app can suggest a match whenever it finds a deal.</p>
+    <form method="POST">
+        <label>Name</label>
+        <input type="text" name="name" placeholder="e.g. Marcus (fix-and-flip investor)" required>
+
+        <label>Phone</label>
+        <input type="text" name="phone" placeholder="404-555-1234">
+
+        <label>Email</label>
+        <input type="text" name="email" placeholder="marcus@example.com">
+
+        <label>Price range they usually buy in (optional)</label>
+        <div style="display:flex; gap:10px;">
+            <input type="number" name="min_price" placeholder="Min, e.g. 50000">
+            <input type="number" name="max_price" placeholder="Max, e.g. 150000">
+        </div>
+        <div class="hint">Leave blank if you're not sure of their range yet.</div>
+
+        <label>Counties they buy in (optional)</label>
+        <input type="text" name="counties" placeholder="Fulton, DeKalb, Cobb">
+        <div class="hint">Comma-separated. Leave blank if they buy anywhere.</div>
+
+        <label>Notes</label>
+        <input type="text" name="notes" placeholder="e.g. wants light rehab only, closes fast">
+
+        <button class="big-button" type="submit" style="margin-top:16px; border:none;">Add Buyer</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Your buyers ({{ buyers|length }})</h2>
+    {% if buyers|length == 0 %}
+    <p class="hint">No buyers added yet.</p>
+    {% else %}
+    <table>
+        <tr><th>Name</th><th>Contact</th><th>Range</th><th>Counties</th><th></th></tr>
+        {% for b in buyers %}
+        <tr>
+            <td>{{ b.name }}{% if b.notes %}<br><span class="hint">{{ b.notes }}</span>{% endif %}</td>
+            <td>{% if b.phone %}{{ b.phone }}<br>{% endif %}{% if b.email %}<span class="hint">{{ b.email }}</span>{% endif %}</td>
+            <td>
+                {% if b.min_price or b.max_price %}
+                    {% if b.min_price %}${{ '{:,.0f}'.format(b.min_price) }}{% else %}Any{% endif %}
+                    –
+                    {% if b.max_price %}${{ '{:,.0f}'.format(b.max_price) }}{% else %}Any{% endif %}
+                {% else %}Any{% endif %}
+            </td>
+            <td>{{ b.counties or 'Anywhere' }}</td>
+            <td>
+                <form method="POST" action="{{ url_for('delete_buyer_route', buyer_id=b.id) }}" onsubmit="return confirm('Remove this buyer?');">
+                    <button type="submit" style="background:none; border:none; color:#8b1e1e; font-size:13px;">Remove</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+</div>
+{% endblock %}
