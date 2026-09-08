@@ -13,7 +13,14 @@
         <input type="file" name="csv_file" accept=".csv" required>
         <div class="hint">
             Needs a column called <b>address</b>. Optional columns:
-            <b>asking_price</b>, <b>condition</b> (light/medium/heavy), <b>county</b>.
+            <b>asking_price</b>, <b>condition</b> (light/medium/heavy), <b>county</b>,
+            <b>square_footage</b> (only needed for properties where the automatic
+            lookup can't find it — leave blank otherwise),
+            <b>seller_name</b>, <b>seller_phone</b>, <b>seller_email</b>,
+            <b>motivation</b> (probate/tax_delinquent/divorce/inherited/tired_landlord/foreclosure/relocating),
+            <b>occupancy</b> (vacant/owner/tenant), <b>out_of_state_owner</b> (yes/no),
+            <b>mortgage_status</b> (free_and_clear/has_mortgage), <b>known_issues</b>
+            (foundation/roof/structural/mold, separated by semicolons).
         </div>
         <button class="big-button" type="submit" style="margin-top:16px; border:none;">Check the List</button>
     </form>
@@ -30,12 +37,13 @@
 <div class="card">
     <h3>Results ({{ results|length }} checked)</h3>
     <table>
-        <tr><th>Address</th><th>Asking</th><th>MAO</th><th>Deal?</th></tr>
+        <tr><th>Address</th><th>Asking</th><th>MAO</th><th>Profit</th><th>Deal?</th></tr>
         {% for r in results %}
         <tr>
             <td>{{ r.address }}</td>
             <td>{{ '${:,.0f}'.format(r.asking_price) if r.asking_price else '—' }}</td>
             <td>{{ '${:,.0f}'.format(r.mao) if r.mao else '—' }}</td>
+            <td>{% if r.potential_profit is not none %}${{ '{:,.0f}'.format(r.potential_profit) }}{% else %}—{% endif %}</td>
             <td>
                 {% if r.error %}
                     <span class="tag-no">error</span>
