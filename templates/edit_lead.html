@@ -35,6 +35,15 @@
 
         <h3 style="margin-top:24px;">About the seller</h3>
 
+        <label>Seller's name</label>
+        <input type="text" name="seller_name" value="{{ lead.seller_name or '' }}">
+
+        <label>Seller's phone</label>
+        <input type="text" name="seller_phone" value="{{ lead.seller_phone or '' }}">
+
+        <label>Seller's email</label>
+        <input type="text" name="seller_email" value="{{ lead.seller_email or '' }}">
+
         <label>Why is the seller selling?</label>
         <select name="motivation">
             <option value="unknown" {% if lead.motivation == 'unknown' %}selected{% endif %}>Not sure</option>
@@ -90,3 +99,4 @@
     </form>
 </div>
 {% endblock %}
+
