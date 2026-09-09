@@ -18,6 +18,7 @@ import csv
 import io
 import json
 import os
+import re
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -64,6 +65,10 @@ def load_config():
             "resend_api_key": os.environ.get("RESEND_API_KEY", ""),
             "alert_from_email": os.environ.get("ALERT_FROM_EMAIL", "onboarding@resend.dev"),
             "alert_to_email": os.environ.get("ALERT_TO_EMAIL", ""),
+            "anthropic_api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
+            "anthropic_model": os.environ.get("ANTHROPIC_MODEL", ""),
+            "sms_bot_name": os.environ.get("SMS_BOT_NAME", "Alex"),
+            "sms_bot_max_turns": int(os.environ.get("SMS_BOT_MAX_TURNS", 20)),
         }
 
     if not CONFIG_PATH.exists():
@@ -139,6 +144,17 @@ def init_db():
             counties TEXT,
             notes TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone_number TEXT UNIQUE NOT NULL,
+            transcript TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'active',
+            lead_id INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     # Migration for databases created before quality signals were added.
@@ -443,7 +459,7 @@ def analyze_address(address, asking_price, condition, county, cfg,
 
 def save_lead(result, source="manual"):
     conn = get_db()
-    conn.execute("""
+    cursor = conn.execute("""
         INSERT INTO leads (address, county, asking_price, condition, arv, sqft, sqft_source, repairs, mao, potential_profit, is_deal,
                             seller_name, seller_phone, seller_email,
                             motivation, occupancy, out_of_state_owner, mortgage_status, known_issues,
@@ -461,8 +477,10 @@ def save_lead(result, source="manual"):
         result.get("quality", {}).get("score"), result.get("quality", {}).get("max_score"),
         source,
     ))
+    new_id = cursor.lastrowid
     conn.commit()
     conn.close()
+    return new_id
 
 
 RESEND_API_URL = "https://api.resend.com/emails"
@@ -620,6 +638,142 @@ def get_matching_buyers(asking_price, ceiling_price, county):
             continue
         matches.append(b)
     return matches
+
+
+# ---------- SMS seller-qualification bot ----------
+
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+
+SMS_BOT_SYSTEM_PROMPT_TEMPLATE = """You are {bot_name}, a friendly local real estate investor's assistant \
+texting with a homeowner who may be interested in selling their property. Your only job is to have a \
+warm, low-pressure conversation and gather enough information for your boss to make a cash offer — \
+you never state or imply a price yourself, and you never claim to be human if directly asked.
+
+Keep every message short (1-3 sentences, real text-message style, no bullet points, no markdown).
+Ask ONE question at a time. Let the conversation feel natural, not like a form.
+
+Information to gather, in whatever order feels natural:
+- The property's full address (street, city, state, zip)
+- Why they're considering selling (motivation)
+- The property's condition (roughly: light cosmetic work, medium kitchen/bath/systems, or heavy full rehab)
+- Whether it's vacant, owner-occupied, or tenant-occupied
+- Whether they have a number in mind for what they'd want (asking price) — okay if they don't know
+- Their name, if they haven't given it
+
+If someone seems uninterested, annoyed, or asks to be left alone, thank them politely and stop asking questions.
+
+Once you have the address AND at least condition and motivation (asking price is nice but not required), \
+end your reply with a new line starting exactly with "QUALIFIED:" followed by a JSON object with these \
+keys: address, seller_name, asking_price (number or null), condition (light/medium/heavy), motivation \
+(one of: probate, tax_delinquent, divorce, inherited, tired_landlord, foreclosure, relocating, unknown), \
+occupancy (vacant/owner/tenant/unknown). Put your normal warm closing message to the seller BEFORE that \
+line, since everything before "QUALIFIED:" is what actually gets sent to them — the JSON line itself is \
+stripped out before sending, so the seller never sees it.
+"""
+
+
+def build_sms_system_prompt(cfg):
+    return SMS_BOT_SYSTEM_PROMPT_TEMPLATE.format(bot_name=cfg.get("sms_bot_name", "Alex"))
+
+
+def call_claude(messages, system_prompt, cfg):
+    """
+    Calls the Anthropic Messages API directly (same API this whole app's
+    conversation runs on). Returns (reply_text, error) — never raises, so
+    a bad key or an outage degrades to a polite fallback message instead
+    of a broken webhook response (which Twilio would retry/alarm on).
+    """
+    if not cfg.get("anthropic_api_key") or not cfg.get("anthropic_model"):
+        return None, "ANTHROPIC_API_KEY or ANTHROPIC_MODEL not configured"
+
+    headers = {
+        "x-api-key": cfg["anthropic_api_key"],
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    body = {
+        "model": cfg["anthropic_model"],
+        "max_tokens": 400,
+        "system": system_prompt,
+        "messages": messages,
+    }
+    try:
+        resp = requests.post(ANTHROPIC_API_URL, headers=headers, json=body, timeout=25)
+    except requests.RequestException as e:
+        return None, str(e)
+
+    if resp.status_code != 200:
+        return None, f"{resp.status_code} {resp.text[:200]}"
+
+    data = resp.json()
+    text = "".join(
+        block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"
+    )
+    return text, None
+
+
+QUALIFIED_PATTERN = re.compile(r"QUALIFIED:\s*(\{.*\})", re.DOTALL)
+
+
+def extract_qualified_block(reply_text):
+    """
+    Splits a bot reply into (message_to_send, qualified_data). If no
+    QUALIFIED: block is present, qualified_data is None and the full
+    reply is sent as-is. A malformed JSON block degrades to "not
+    qualified yet" rather than crashing the webhook.
+    """
+    match = QUALIFIED_PATTERN.search(reply_text)
+    if not match:
+        return reply_text.strip(), None
+
+    message = reply_text[:match.start()].strip()
+    try:
+        data = json.loads(match.group(1))
+    except (json.JSONDecodeError, ValueError):
+        return message or reply_text.strip(), None
+
+    return message, data
+
+
+def get_conversation(phone_number):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM conversations WHERE phone_number = ?", (phone_number,)).fetchone()
+    conn.close()
+    return row
+
+
+def save_conversation(phone_number, transcript, status, lead_id=None):
+    conn = get_db()
+    existing = conn.execute(
+        "SELECT id FROM conversations WHERE phone_number = ?", (phone_number,)
+    ).fetchone()
+    if existing:
+        conn.execute("""
+            UPDATE conversations SET transcript = ?, status = ?, lead_id = COALESCE(?, lead_id),
+                                      updated_at = CURRENT_TIMESTAMP
+            WHERE phone_number = ?
+        """, (json.dumps(transcript), status, lead_id, phone_number))
+    else:
+        conn.execute("""
+            INSERT INTO conversations (phone_number, transcript, status, lead_id)
+            VALUES (?, ?, ?, ?)
+        """, (phone_number, json.dumps(transcript), status, lead_id))
+    conn.commit()
+    conn.close()
+
+
+def twiml_response(message):
+    """Builds the minimal TwiML XML Twilio expects as a webhook reply."""
+    from xml.sax.saxutils import escape
+    body = f'<?xml version="1.0" encoding="UTF-8"?><Response>'
+    if message:
+        body += f"<Message>{escape(message)}</Message>"
+    body += "</Response>"
+    from flask import Response
+    return Response(body, mimetype="text/xml")
+
+
+OPT_OUT_WORDS = {"stop", "stopall", "unsubscribe", "cancel", "end", "quit"}
 
 
 # ---------- Routes ----------
@@ -910,6 +1064,116 @@ def discover():
         "discover.html", listings=listings, analyzed=analyzed, counties=counties,
         searched_count=len(listings), analyzed_count=len(shortlist),
     )
+
+
+@app.route("/sms/webhook", methods=["POST"])
+def sms_webhook():
+    """
+    Twilio POSTs here (application/x-www-form-urlencoded) whenever your
+    Twilio number receives an SMS. We reply synchronously with TwiML —
+    no outbound Twilio API call or credentials needed for the reply itself,
+    only for buying the number and pointing it at this URL in the first
+    place (done entirely on Twilio's side, not in this app).
+    """
+    from_number = request.form.get("From", "").strip()
+    body = request.form.get("Body", "").strip()
+    if not from_number or not body:
+        return twiml_response("")
+
+    conv = get_conversation(from_number)
+    transcript = json.loads(conv["transcript"]) if conv else []
+
+    if conv and conv["status"] in ("opted_out",):
+        return twiml_response("")  # never message an opted-out number again
+
+    if body.strip().lower() in OPT_OUT_WORDS:
+        transcript.append({"role": "user", "content": body})
+        save_conversation(from_number, transcript, status="opted_out")
+        return twiml_response("You won't receive further messages. Reply START to resubscribe.")
+
+    if conv and conv["status"] == "qualified":
+        # Already handed off to a human — stop auto-replying so the bot
+        # doesn't talk over whoever picks up the conversation next.
+        return twiml_response("")
+
+    cfg = load_config()
+    transcript.append({"role": "user", "content": body})
+
+    if len(transcript) > cfg.get("sms_bot_max_turns", 20):
+        save_conversation(from_number, transcript, status="needs_human")
+        send_alert(
+            f"Text conversation needs a human: {from_number}",
+            "This conversation ran long without qualifying. Take over manually.",
+            cfg,
+        )
+        return twiml_response("Thanks for all the info — let me have my colleague follow up with you directly.")
+
+    reply_text, error = call_claude(transcript, build_sms_system_prompt(cfg), cfg)
+    if error:
+        save_conversation(from_number, transcript, status="error")
+        print(f"SMS bot error for {from_number}: {error}")
+        return twiml_response("Thanks for your message! I'm having a small technical hiccup — someone will follow up with you shortly.")
+
+    message_to_send, qualified_data = extract_qualified_block(reply_text)
+    transcript.append({"role": "assistant", "content": reply_text})
+
+    if qualified_data:
+        result = analyze_address(
+            qualified_data.get("address", "") or "",
+            qualified_data.get("asking_price"),
+            qualified_data.get("condition") or "medium",
+            "",
+            cfg,
+            motivation=qualified_data.get("motivation") or "unknown",
+            occupancy=qualified_data.get("occupancy") or "unknown",
+            seller_name=qualified_data.get("seller_name") or "",
+            seller_phone=from_number,
+        )
+        lead_id = save_lead(result, source="text_bot")
+        save_conversation(from_number, transcript, status="qualified", lead_id=lead_id)
+        send_alert(
+            f"Qualified seller lead via text: {result['address']}",
+            f"From: {from_number}\n"
+            f"Address: {result['address']}\n"
+            f"Asking: {qualified_data.get('asking_price') or 'not given'}\n"
+            f"Condition: {qualified_data.get('condition')}\n"
+            f"Motivation: {qualified_data.get('motivation')}\n"
+            f"{'DEAL — clears your MAO!' if result.get('is_deal') else ''}",
+            cfg,
+        )
+        return twiml_response(message_to_send or "Thanks! I'll follow up soon.")
+
+    save_conversation(from_number, transcript, status="active")
+    return twiml_response(message_to_send)
+
+
+@app.route("/conversations")
+def conversations_list():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM conversations ORDER BY updated_at DESC LIMIT 100").fetchall()
+    conn.close()
+    parsed = []
+    for r in rows:
+        transcript = json.loads(r["transcript"])
+        last_message = transcript[-1]["content"] if transcript else ""
+        parsed.append({
+            "id": r["id"], "phone_number": r["phone_number"], "status": r["status"],
+            "lead_id": r["lead_id"], "updated_at": r["updated_at"],
+            "message_count": len(transcript), "last_message": last_message,
+        })
+    return render_template("conversations.html", conversations=parsed)
+
+
+@app.route("/conversations/<int:conv_id>")
+def conversation_detail(conv_id):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM conversations WHERE id = ?", (conv_id,)).fetchone()
+    conn.close()
+    if not row:
+        flash("That conversation doesn't exist.")
+        return redirect(url_for("conversations_list"))
+    transcript = json.loads(row["transcript"])
+    return render_template("conversation_detail.html", conv=row, transcript=transcript)
 
 
 @app.route("/sources")
