@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Conversation{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>{{ conv.phone_number }}</h2>
+    <div class="stat-row"><span>Status</span><span>{{ conv.status }}</span></div>
+    {% if conv.lead_id %}
+    <div class="stat-row"><span>Linked lead</span><span><a class="plain" href="{{ url_for('edit_lead', lead_id=conv.lead_id) }}">View / Edit Lead</a></span></div>
+    {% endif %}
+</div>
+
+<div class="card">
+    {% for m in transcript %}
+    <div style="margin-bottom:14px; text-align:{{ 'right' if m.role == 'assistant' else 'left' }};">
+        <div style="display:inline-block; max-width:80%; padding:10px 14px; border-radius:14px; font-size:14px;
+                    background:{{ '#2e7d4f' if m.role == 'assistant' else '#eee' }};
+                    color:{{ 'white' if m.role == 'assistant' else '#222' }};">
+            {{ m.content.split('QUALIFIED:')[0].strip() if 'QUALIFIED:' in m.content else m.content }}
+        </div>
+        <div class="hint">{{ 'Bot' if m.role == 'assistant' else 'Seller' }}</div>
+    </div>
+    {% endfor %}
+</div>
+
+<a class="big-button secondary" href="{{ url_for('conversations_list') }}">Back to All Conversations</a>
+{% endblock %}
