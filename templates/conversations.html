@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Text Conversations{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>Text bot conversations</h2>
+    <p class="hint">Every inbound conversation your Twilio number has had. Tap one to see the full transcript.</p>
+</div>
+
+{% if conversations|length == 0 %}
+<div class="card empty-state"><p>No text conversations yet.</p></div>
+{% else %}
+<div class="card">
+    <table>
+        <tr><th>Phone</th><th>Status</th><th>Last message</th><th></th></tr>
+        {% for c in conversations %}
+        <tr>
+            <td>{{ c.phone_number }}</td>
+            <td>
+                {% if c.status == 'qualified' %}<span class="tag-yes">Qualified</span>
+                {% elif c.status == 'opted_out' %}<span class="tag-no">Opted out</span>
+                {% elif c.status == 'needs_human' %}<span class="tag-no">Needs you</span>
+                {% elif c.status == 'error' %}<span class="tag-no">Error</span>
+                {% else %}<span class="tag-no">Active</span>{% endif %}
+            </td>
+            <td><span class="hint">{{ c.last_message[:60] }}{% if c.last_message|length > 60 %}…{% endif %}</span></td>
+            <td><a class="plain" href="{{ url_for('conversation_detail', conv_id=c.id) }}">View</a></td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+{% endblock %}
